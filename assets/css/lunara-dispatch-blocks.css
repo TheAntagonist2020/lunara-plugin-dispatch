@@ -1,0 +1,123 @@
+.lunara-journal-block,
+.lunara-journal-spotlight {
+    display: grid;
+    gap: 22px;
+}
+
+.lunara-journal-block--grid {
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.lunara-journal-block--list,
+.lunara-journal-block--rail {
+    grid-template-columns: 1fr;
+}
+
+.lunara-journal-spotlight {
+    grid-template-columns: minmax(0, 1.45fr) minmax(260px, .75fr);
+    align-items: start;
+}
+
+.lunara-journal-card {
+    min-width: 0;
+    border: 1px solid var(--lunara-border, rgba(211, 170, 87, .24));
+    background: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.012));
+}
+
+.lunara-journal-card--list,
+.lunara-journal-card--rail {
+    display: grid;
+    grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+}
+
+.lunara-journal-card--hero {
+    grid-row: span 4;
+}
+
+.lunara-journal-card__image {
+    display: block;
+    aspect-ratio: 16 / 10;
+    overflow: hidden;
+    background: #07101d;
+}
+
+.lunara-journal-card--list .lunara-journal-card__image,
+.lunara-journal-card--rail .lunara-journal-card__image {
+    aspect-ratio: 1 / 1;
+}
+
+.lunara-journal-card__image img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.lunara-journal-card__body {
+    padding: 18px;
+}
+
+.lunara-journal-card__meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 9px;
+    color: var(--lunara-gold-light, #edd296);
+    font-size: 12px;
+    text-transform: uppercase;
+}
+
+.lunara-journal-card__title {
+    margin: 0;
+    font-size: clamp(1.05rem, 2vw, 1.35rem);
+    line-height: 1.18;
+}
+
+.lunara-journal-card__title a {
+    color: var(--lunara-text, #f4efe3);
+    text-decoration: none;
+}
+
+.lunara-journal-card__excerpt {
+    margin-top: 10px;
+    color: var(--lunara-text-muted, #b8b0a2);
+    font-size: 14px;
+    line-height: 1.55;
+}
+
+.lunara-journal-card__excerpt p {
+    margin: 0;
+}
+
+.lunara-journal-lanes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.lunara-journal-lane {
+    display: inline-flex;
+    gap: 8px;
+    align-items: center;
+    border: 1px solid var(--lunara-border, rgba(211, 170, 87, .24));
+    color: var(--lunara-text, #f4efe3);
+    padding: 9px 12px;
+    text-decoration: none;
+}
+
+.lunara-journal-lane em {
+    color: var(--lunara-gold-light, #edd296);
+    font-style: normal;
+}
+
+.lunara-journal-empty {
+    color: var(--lunara-text-muted, #b8b0a2);
+}
+
+@media (max-width: 760px) {
+    .lunara-journal-spotlight,
+    .lunara-journal-card--list,
+    .lunara-journal-card--rail {
+        grid-template-columns: 1fr;
+    }
+}
