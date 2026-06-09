@@ -228,6 +228,10 @@ class Lunara_Dispatch_Plugin {
 				? $this->post_builder->get_last_topic_duplicate_skips()
 				: array();
 			$topic_duplicate_count = count($topic_duplicate_skips);
+			$quality_gate_skips = method_exists($this->post_builder, 'get_last_quality_gate_skips')
+				? $this->post_builder->get_last_quality_gate_skips()
+				: array();
+			$quality_gate_count = count($quality_gate_skips);
 
 			if (empty($created_post_ids)) {
 				if ($topic_duplicate_count > 0) {
@@ -243,6 +247,36 @@ class Lunara_Dispatch_Plugin {
 						'skipped_duplicates'       => $skipped,
 						'skipped_topic_duplicates' => $topic_duplicate_count,
 						'topic_duplicate_skips'    => $topic_duplicate_skips,
+						'skipped_quality_gate'     => $quality_gate_count,
+						'quality_gate_skips'       => $quality_gate_skips,
+						'created'                  => 0,
+						'imported'                 => count($items),
+						'image_blocked_sources'    => count(array_filter($items, static function ($item) { return !empty($item['image_blocked']); })),
+						'source_items_with_image'  => $source_items_with_image,
+						'item_images_sideloaded'   => $item_images_sideloaded,
+						'section_images_matched'   => $section_images_matched,
+						'created_with_featured_image' => 0,
+						'created_without_featured_image' => 0,
+						'post_status'              => $post_status,
+						'post_status_label'        => $this->get_status_label($post_status),
+					));
+				}
+
+				if ($quality_gate_count > 0) {
+					$this->feed_fetcher->mark_seen($items);
+
+					return $this->result(true, sprintf(
+						'Skipped %d generated Journal entr%s because %s failed the editorial quality gate.',
+						$quality_gate_count,
+						1 === $quality_gate_count ? 'y' : 'ies',
+						1 === $quality_gate_count ? 'it' : 'they'
+					), array(
+						'feed_errors'              => $errors,
+						'skipped_duplicates'       => $skipped,
+						'skipped_topic_duplicates' => $topic_duplicate_count,
+						'topic_duplicate_skips'    => $topic_duplicate_skips,
+						'skipped_quality_gate'     => $quality_gate_count,
+						'quality_gate_skips'       => $quality_gate_skips,
 						'created'                  => 0,
 						'imported'                 => count($items),
 						'image_blocked_sources'    => count(array_filter($items, static function ($item) { return !empty($item['image_blocked']); })),
@@ -261,6 +295,8 @@ class Lunara_Dispatch_Plugin {
 					'skipped_duplicates'       => $skipped,
 					'skipped_topic_duplicates' => $topic_duplicate_count,
 					'topic_duplicate_skips'    => $topic_duplicate_skips,
+					'skipped_quality_gate'     => $quality_gate_count,
+					'quality_gate_skips'       => $quality_gate_skips,
 					'created'                  => 0,
 					'imported'                 => count($items),
 					'image_blocked_sources'    => count(array_filter($items, static function ($item) { return !empty($item['image_blocked']); })),
@@ -297,6 +333,8 @@ class Lunara_Dispatch_Plugin {
 				'skipped_duplicates' => $skipped,
 				'skipped_topic_duplicates' => $topic_duplicate_count,
 				'topic_duplicate_skips' => $topic_duplicate_skips,
+				'skipped_quality_gate' => $quality_gate_count,
+				'quality_gate_skips' => $quality_gate_skips,
 				'feed_errors'        => $errors,
 				'post_status'        => $post_status,
 				'post_status_label'  => $this->get_status_label($post_status),
@@ -357,6 +395,8 @@ class Lunara_Dispatch_Plugin {
 			'created_without_featured_image' => isset($payload['created_without_featured_image']) ? (int) $payload['created_without_featured_image'] : 0,
 			'skipped_topic_duplicates' => isset($payload['skipped_topic_duplicates']) ? (int) $payload['skipped_topic_duplicates'] : 0,
 			'topic_duplicate_skips' => isset($payload['topic_duplicate_skips']) && is_array($payload['topic_duplicate_skips']) ? $payload['topic_duplicate_skips'] : array(),
+			'skipped_quality_gate' => isset($payload['skipped_quality_gate']) ? (int) $payload['skipped_quality_gate'] : 0,
+			'quality_gate_skips' => isset($payload['quality_gate_skips']) && is_array($payload['quality_gate_skips']) ? $payload['quality_gate_skips'] : array(),
 		), false);
 
         return $payload;

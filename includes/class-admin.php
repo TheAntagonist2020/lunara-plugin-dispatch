@@ -186,6 +186,8 @@ class Lunara_Dispatch_Admin {
         $last_state   = isset($last_report['success']) ? (!empty($last_report['success']) ? 'Healthy' : 'Needs attention') : 'Unknown';
         $last_message = !empty($last_report['message']) ? $last_report['message'] : 'No run message recorded yet.';
         $last_topic_skips = isset($last_report['skipped_topic_duplicates']) ? (int) $last_report['skipped_topic_duplicates'] : 0;
+        $last_quality_skips = isset($last_report['skipped_quality_gate']) ? (int) $last_report['skipped_quality_gate'] : 0;
+        $last_quality_skip_rows = isset($last_report['quality_gate_skips']) && is_array($last_report['quality_gate_skips']) ? $last_report['quality_gate_skips'] : array();
         $last_image_blocked_sources = isset($last_report['image_blocked_sources']) ? (int) $last_report['image_blocked_sources'] : 0;
         $last_source_items_with_image = isset($last_report['source_items_with_image']) ? (int) $last_report['source_items_with_image'] : 0;
         $last_item_images_sideloaded = isset($last_report['item_images_sideloaded']) ? (int) $last_report['item_images_sideloaded'] : 0;
@@ -215,6 +217,14 @@ class Lunara_Dispatch_Admin {
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Active sources:</strong> <?php echo esc_html((string) count($enabled_sources)); ?><?php if (!empty($enabled_sources)) : ?> — <?php echo esc_html(implode(', ', array_map(function ($src) { return (string) ($src['label'] ?? 'Source'); }, $enabled_sources))); ?><?php endif; ?></p>
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Live post behavior:</strong> New Journal entries are currently created as <code style="color:#c9a961;"><?php echo esc_html($post_status); ?></code>.</p>
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Last topic-overlap skips:</strong> <?php echo esc_html((string) $last_topic_skips); ?></p>
+                <p style="margin:0 0 8px; color:#cccccc;"><strong>Last quality-gate skips:</strong> <?php echo esc_html((string) $last_quality_skips); ?></p>
+                <?php if (!empty($last_quality_skip_rows)) : ?>
+                    <ul style="margin:0 0 10px 18px; color:#cccccc;">
+                        <?php foreach (array_slice($last_quality_skip_rows, 0, 4) as $skip_row) : ?>
+                            <li><strong><?php echo esc_html((string) ($skip_row['title'] ?? 'Untitled')); ?>:</strong> <?php echo esc_html((string) ($skip_row['reason'] ?? 'quality gate')); ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Last source-image blocks:</strong> <?php echo esc_html((string) $last_image_blocked_sources); ?></p>
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Last image path:</strong> <?php echo esc_html((string) $last_source_items_with_image); ?> available / <?php echo esc_html((string) $last_item_images_sideloaded); ?> sideloaded / <?php echo esc_html((string) $last_section_images_matched); ?> matched / <?php echo esc_html((string) $last_created_with_featured_image); ?> attached.</p>
                 <p style="margin:0; color:#cccccc;"><strong>Last run note:</strong> <?php echo esc_html($last_message); ?></p>
@@ -437,7 +447,7 @@ class Lunara_Dispatch_Admin {
                                 msg += ' [' + statusLabel + ': ' + d.post_ids.join(', ') + ']';
                             }
                             if (typeof d.imported !== 'undefined') {
-                                msg += ' (Imported ' + d.imported + ', URL skipped ' + (d.skipped_duplicates || 0) + ', Topic skipped ' + (d.skipped_topic_duplicates || 0) + ', Source images blocked ' + (d.image_blocked_sources || 0) + ')';
+                                msg += ' (Imported ' + d.imported + ', URL skipped ' + (d.skipped_duplicates || 0) + ', Topic skipped ' + (d.skipped_topic_duplicates || 0) + ', Quality skipped ' + (d.skipped_quality_gate || 0) + ', Source images blocked ' + (d.image_blocked_sources || 0) + ')';
                             }
                             if (typeof d.item_images_sideloaded !== 'undefined') {
                                 msg += ' Images: ' + (d.source_items_with_image || 0) + ' available / ' + (d.item_images_sideloaded || 0) + ' sideloaded / ' + (d.section_images_matched || 0) + ' matched / ' + (d.created_with_featured_image || 0) + ' attached.';

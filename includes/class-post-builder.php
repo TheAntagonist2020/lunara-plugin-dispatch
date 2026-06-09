@@ -21,6 +21,14 @@ class Lunara_Dispatch_Post_Builder {
 	 */
 	private $last_topic_duplicate_skips = array();
 
+	/**
+	 * Sections skipped during the latest split because they failed the
+	 * editorial quality gate.
+	 *
+	 * @var array
+	 */
+	private $last_quality_gate_skips = array();
+
 	public function get_target_post_type() {
 		$pt = sanitize_key( get_option( 'lunara_dispatch_post_type', 'journal' ) );
 		if ( empty( $pt ) || ! post_type_exists( $pt ) ) {
@@ -202,6 +210,7 @@ class Lunara_Dispatch_Post_Builder {
 	public function split_into_individual_posts( $html, array $section_image_map, $post_type, $post_status = 'draft' ) {
 		$created                           = array();
 		$this->last_topic_duplicate_skips  = array();
+		$this->last_quality_gate_skips     = array();
 		$sections                          = $this->extract_sections_with_body( $html );
 		if ( empty( $sections ) ) {
 			return $created;
@@ -214,7 +223,20 @@ class Lunara_Dispatch_Post_Builder {
 		foreach ( $sections as $section ) {
 			$title = trim( $section['title'] );
 			$body  = trim( $section['body'] );
-			if ( ! $this->is_publishable_section( $title, $body ) ) {
+			$quality_failure = $this->publishable_section_failure( $title, $body );
+			if ( '' !== $quality_failure ) {
+				$this->last_quality_gate_skips[] = array(
+					'title'  => '' !== $title ? $title : '(untitled section)',
+					'reason' => $quality_failure,
+				);
+
+				error_log(
+					sprintf(
+						'Lunara Dispatch: quality gate skipped "%s" (%s).',
+						'' !== $title ? $title : '(untitled section)',
+						$quality_failure
+					)
+				);
 				continue;
 			}
 
@@ -342,6 +364,15 @@ class Lunara_Dispatch_Post_Builder {
 	}
 
 	/**
+	 * Return quality-gate skips from the latest split operation.
+	 *
+	 * @return array
+	 */
+	public function get_last_quality_gate_skips() {
+		return $this->last_quality_gate_skips;
+	}
+
+	/**
 	 * Reject thin or formulaic AI sections before they can become live posts.
 	 *
 	 * @param string $title Section title.
@@ -349,28 +380,43 @@ class Lunara_Dispatch_Post_Builder {
 	 * @return bool
 	 */
 	private function is_publishable_section( $title, $body ) {
+		return '' === $this->publishable_section_failure( $title, $body );
+	}
+
+	/**
+	 * Explain why a generated section should not become a Journal draft.
+	 *
+	 * @param string $title Section title.
+	 * @param string $body  Section body HTML.
+	 * @return string Empty when publishable.
+	 */
+	private function publishable_section_failure( $title, $body ) {
 		$title = trim( (string) $title );
 		$body  = trim( (string) $body );
 
 		if ( '' === $title || '' === $body ) {
-			return false;
+			return 'missing title or body';
 		}
 
 		if ( preg_match( '/^lunara journal\b/i', $title ) ) {
-			return false;
+			return 'generic Journal wrapper title';
 		}
 
 		$text = trim( preg_replace( '/\s+/u', ' ', wp_strip_all_tags( $body ) ) );
 		if ( '' === $text ) {
-			return false;
+			return 'empty text after stripping HTML';
 		}
 
 		if ( str_word_count( $text ) < 90 ) {
-			return false;
+			return 'under 90 words';
 		}
 
 		if ( substr_count( strtolower( $body ), '<p' ) < 2 ) {
-			return false;
+			return 'fewer than two real paragraphs';
+		}
+
+		if ( ! $this->has_publishable_headline_shape( $title ) ) {
+			return 'weak headline shape';
 		}
 
 		$banned_phrases = array(
@@ -394,19 +440,159 @@ class Lunara_Dispatch_Post_Builder {
 		$lower_text = strtolower( $text );
 		foreach ( $banned_phrases as $phrase ) {
 			if ( false !== strpos( $lower_text, $phrase ) ) {
-				return false;
+				return 'banned phrase: ' . $phrase;
 			}
 		}
 
 		if ( ! $this->has_originality_signal( $title . ' ' . $text ) ) {
-			return false;
+			return 'no distinct Lunara angle';
+		}
+
+		if ( ! $this->has_reader_pull_signal( $title . ' ' . $text ) ) {
+			return 'no reader-pull or human-stake signal';
+		}
+
+		if ( $this->has_dead_register_density( $title . ' ' . $text ) ) {
+			return 'dead analyst register';
 		}
 
 		if ( $this->mentions_source_risk_outlet( $title . ' ' . $text ) && ! $this->has_source_risk_originality_signal( $title . ' ' . $text ) ) {
+			return 'source-risk item without enough original judgment';
+		}
+
+		return '';
+	}
+
+	/**
+	 * Ensure headlines look like editorial entries, not feed-parser labels.
+	 *
+	 * @param string $title Generated title.
+	 * @return bool
+	 */
+	private function has_publishable_headline_shape( $title ) {
+		$title = trim( preg_replace( '/\s+/u', ' ', wp_strip_all_tags( (string) $title ) ) );
+		if ( '' === $title ) {
 			return false;
 		}
 
+		$word_count = str_word_count( $title );
+		if ( $word_count < 4 || $word_count > 16 ) {
+			return false;
+		}
+
+		$lower_title = strtolower( $title );
+		$weak_shapes = array(
+			'/^.+\s+news$/',
+			'/^.+\s+update$/',
+			'/^.+\s+announcement$/',
+			'/^.+\s+trailer\s+(arrives|drops|released)$/',
+			'/^.+\s+gets\s+(release date|first look|new trailer)$/',
+			'/^(new|latest)\s+.+\s+(revealed|announced|confirmed)$/',
+			'/^what\s+we\s+know\s+about\b/',
+			'/^everything\s+we\s+know\s+about\b/',
+			'/^.+\s+is\s+coming\s+soon$/',
+		);
+
+		foreach ( $weak_shapes as $pattern ) {
+			if ( preg_match( $pattern, $lower_title ) ) {
+				return false;
+			}
+		}
+
 		return true;
+	}
+
+	/**
+	 * Require evidence that the draft has a film-reader reason to exist.
+	 *
+	 * @param string $text Title and body text.
+	 * @return bool
+	 */
+	private function has_reader_pull_signal( $text ) {
+		$signals = array(
+			'admiration',
+			'affection',
+			'ambition',
+			'argument',
+			'audience',
+			'brave',
+			'cowardice',
+			'curiosity',
+			'delight',
+			'disappointment',
+			'dread',
+			'exciting',
+			'explains',
+			'fan',
+			'feels',
+			'friction',
+			'gatekeeping',
+			'hope',
+			'human',
+			'irritation',
+			'nerve',
+			'pleasure',
+			'promise',
+			'protective',
+			'race',
+			'racism',
+			'reader',
+			'reveals',
+			'risk',
+			'rooting',
+			'stakes',
+			'stings',
+			'taste',
+			'tension',
+			'thrilling',
+			'watching',
+			'worry',
+		);
+
+		$count      = 0;
+		$lower_text = strtolower( wp_strip_all_tags( (string) $text ) );
+		foreach ( $signals as $signal ) {
+			if ( false !== strpos( $lower_text, $signal ) ) {
+				$count++;
+			}
+		}
+
+		return $count >= 2;
+	}
+
+	/**
+	 * Catch prose that is mostly strategy-memo language without pulse.
+	 *
+	 * @param string $text Title and body text.
+	 * @return bool
+	 */
+	private function has_dead_register_density( $text ) {
+		$dead_terms = array(
+			'boardroom',
+			'brand extension',
+			'content engine',
+			'corporate strategy',
+			'franchise strategy',
+			'infrastructure',
+			'market positioning',
+			'pipeline',
+			'platform strategy',
+			'production mandate',
+			'strategic move',
+			'studio strategy',
+			'synergy',
+			'theme-park',
+		);
+
+		$count      = 0;
+		$lower_text = strtolower( wp_strip_all_tags( (string) $text ) );
+		foreach ( $dead_terms as $term ) {
+			if ( false !== strpos( $lower_text, $term ) ) {
+				$count++;
+			}
+		}
+
+		return $count >= 3 && ! $this->has_reader_pull_signal( $text );
 	}
 
 	/**
