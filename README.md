@@ -14,11 +14,13 @@ Dispatch aggregates film-news sources, routes eligible items through the Lunara 
 
 ## Version
 
-Current baseline: `3.0.12`.
+Current baseline: `3.0.13`.
 
 ## Editorial Quality Gate
 
 Dispatch keeps generated Journal entries in draft-oriented review mode and now records why generated sections fail the runtime quality gate. The gate rejects thin entries, weak feed-parser headlines, banned generic phrases, sections without a distinct Lunara angle, sections without reader-pull or human-stake signals, source-risk items without enough original judgment, and prose that leans too heavily into dead analyst/register language.
+
+Dispatch-imported images also receive practical attachment alt text from the source item title when no alt text is already present.
 
 ## Secrets
 

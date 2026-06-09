@@ -54,6 +54,7 @@ class Lunara_Dispatch_Image_Handler {
 
 		$this->maybe_upscale_attachment( (int) $attachment_id );
 		$this->store_source_context( (int) $attachment_id, $image_url, $source_url, $source_label, $image_credit );
+		$this->maybe_update_attachment_alt( (int) $attachment_id, $title );
 
 		return (int) $attachment_id;
 	}
@@ -124,6 +125,39 @@ class Lunara_Dispatch_Image_Handler {
 		}
 
 		$this->maybe_update_attachment_caption( $attachment_id, $source_label, $image_credit );
+	}
+
+	/**
+	 * Add practical alt text when the source image did not provide one.
+	 *
+	 * @param int    $attachment_id Attachment ID.
+	 * @param string $title         Source item title.
+	 * @return void
+	 */
+	private function maybe_update_attachment_alt( $attachment_id, $title = '' ) {
+		$attachment_id = (int) $attachment_id;
+		if ( $attachment_id <= 0 ) {
+			return;
+		}
+
+		$existing_alt = trim( (string) get_post_meta( $attachment_id, '_wp_attachment_image_alt', true ) );
+		if ( '' !== $existing_alt ) {
+			return;
+		}
+
+		$alt = html_entity_decode( wp_strip_all_tags( (string) $title ), ENT_QUOTES, get_bloginfo( 'charset' ) );
+		$alt = trim( preg_replace( '/\s+/u', ' ', (string) $alt ) );
+		if ( '' === $alt ) {
+			return;
+		}
+
+		if ( function_exists( 'mb_strlen' ) && function_exists( 'mb_substr' ) && mb_strlen( $alt ) > 150 ) {
+			$alt = rtrim( mb_substr( $alt, 0, 147 ) ) . '...';
+		} elseif ( strlen( $alt ) > 150 ) {
+			$alt = rtrim( substr( $alt, 0, 147 ) ) . '...';
+		}
+
+		update_post_meta( $attachment_id, '_wp_attachment_image_alt', sanitize_text_field( $alt ) );
 	}
 
 	/**
