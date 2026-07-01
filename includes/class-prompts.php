@@ -158,7 +158,7 @@ STRUCTURE:
 - Do not sound like a roundup writer summarizing links. Sound like a critic deciding what deserves oxygen.
 - Standalone only. Do not reference Lunara review scores, prior review verdicts, or review-side critical architecture.
 - Each entry should usually be 2 to 4 paragraphs. Do not ramble.
-- If a generated entry would be less than 90 words or fewer than 2 real paragraphs, skip it instead of publishing a stub.
+- If a generated entry would be less than 75 words or fewer than 2 real paragraphs, skip it instead of publishing a stub.
 
 LANDING:
 Every entry ends with a landing sentence that gives the reader a clean final charge: a claim, implication, warning, joke with teeth, or specific thing to watch. A question is allowed only when it is the strongest ending, not as a formula.
@@ -226,7 +226,7 @@ Editorial guidance:
 - Do not publish "this exists" posts. Do not publish thin quote posts. Do not publish filler.
 - Do not write roundup filler. If only one item has life, write one entry. If none have life, skip.
 - The final entry must have a pulse: a film-fan reason, a critic's position, and a clear pressure point by paragraph two.
-- Each entry should usually be 2 to 4 paragraphs and at least 90 words.
+- Each entry should usually be 2 to 4 paragraphs and at least 75 words.
 - Every entry must end with a landing sentence. A question is optional, never mandatory.
 
 Input News Data:

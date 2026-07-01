@@ -384,6 +384,24 @@ class Lunara_Dispatch_Post_Builder {
 	}
 
 	/**
+	 * Multibyte-safe word count. str_word_count() only recognizes ASCII word
+	 * characters, so an accented name (Cuaron, Amelie, Inarritu -- routine in
+	 * film journalism) gets fragmented into extra tokens at each accent,
+	 * inflating the count. Assumes $text already has whitespace trimmed and
+	 * collapsed, which every caller here already does.
+	 *
+	 * @param string $text Already-normalized text.
+	 * @return int
+	 */
+	private function count_words( $text ) {
+		$text = trim( (string) $text );
+		if ( '' === $text ) {
+			return 0;
+		}
+		return count( preg_split( '/\s+/u', $text ) );
+	}
+
+	/**
 	 * Explain why a generated section should not become a Journal draft.
 	 *
 	 * @param string $title Section title.
@@ -407,8 +425,8 @@ class Lunara_Dispatch_Post_Builder {
 			return 'empty text after stripping HTML';
 		}
 
-		if ( str_word_count( $text ) < 90 ) {
-			return 'under 90 words';
+		if ( $this->count_words( $text ) < 75 ) {
+			return 'under 75 words';
 		}
 
 		if ( substr_count( strtolower( $body ), '<p' ) < 2 ) {
@@ -419,17 +437,18 @@ class Lunara_Dispatch_Post_Builder {
 			return 'weak headline shape';
 		}
 
+		// Kept to genuine press-release / churnalism tells. Dropped 'poised to'
+		// and 'underscores' -- common enough in sharp, legitimate criticism that
+		// they were catching good stories on an incidental word, not bad ones.
 		$banned_phrases = array(
 			'this matters because',
 			'worth keeping an eye on',
 			'raises significant questions',
 			'highly anticipated',
 			'made waves',
-			'poised to',
 			'only time will tell',
 			'fans are eagerly awaiting',
 			'delves into',
-			'underscores',
 			'a testament to',
 			'the announcement comes as',
 			'the news comes as',
@@ -444,12 +463,16 @@ class Lunara_Dispatch_Post_Builder {
 			}
 		}
 
-		if ( ! $this->has_originality_signal( $title . ' ' . $text ) ) {
-			return 'no distinct Lunara angle';
-		}
-
-		if ( ! $this->has_reader_pull_signal( $title . ' ' . $text ) ) {
-			return 'no reader-pull or human-stake signal';
+		// These two checks used to be AND-gated (both required), which meant a
+		// genuinely sharp, well-written section could still be auto-rejected
+		// just for not happening to use a word from one of two fixed lists.
+		// Either signal is real evidence of editorial voice on its own, so
+		// requiring just one cuts false rejections without lowering the bar
+		// on stories that show neither. Written inline (not pre-assigned to
+		// variables) so && short-circuits and skips the second, pricier
+		// keyword scan once the first signal already passed.
+		if ( ! $this->has_originality_signal( $title . ' ' . $text ) && ! $this->has_reader_pull_signal( $title . ' ' . $text ) ) {
+			return 'no distinct Lunara angle or reader-pull signal';
 		}
 
 		if ( $this->has_dead_register_density( $title . ' ' . $text ) ) {
@@ -475,7 +498,7 @@ class Lunara_Dispatch_Post_Builder {
 			return false;
 		}
 
-		$word_count = str_word_count( $title );
+		$word_count = $this->count_words( $title );
 		if ( $word_count < 4 || $word_count > 16 ) {
 			return false;
 		}
