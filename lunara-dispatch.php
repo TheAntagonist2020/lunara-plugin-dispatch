@@ -3,7 +3,7 @@
  * Plugin Name: Lunara Dispatch Automation
  * Plugin URI:  https://lunarafilm.com
  * Description: Aggregates film news from multiple RSS sources, runs items through Claude with the Lunara Journal editorial voice, sideloads images, and creates one draft journal post per Journal section with the matched image featured.
- * Version:     3.0.13
+ * Version:     3.0.14
  * Author:      Lunara Film
  * License:     GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html

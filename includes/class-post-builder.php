@@ -407,8 +407,8 @@ class Lunara_Dispatch_Post_Builder {
 			return 'empty text after stripping HTML';
 		}
 
-		if ( str_word_count( $text ) < 90 ) {
-			return 'under 90 words';
+		if ( str_word_count( $text ) < 75 ) {
+			return 'under 75 words';
 		}
 
 		if ( substr_count( strtolower( $body ), '<p' ) < 2 ) {
@@ -419,17 +419,18 @@ class Lunara_Dispatch_Post_Builder {
 			return 'weak headline shape';
 		}
 
+		// Kept to genuine press-release / churnalism tells. Dropped 'poised to'
+		// and 'underscores' -- common enough in sharp, legitimate criticism that
+		// they were catching good stories on an incidental word, not bad ones.
 		$banned_phrases = array(
 			'this matters because',
 			'worth keeping an eye on',
 			'raises significant questions',
 			'highly anticipated',
 			'made waves',
-			'poised to',
 			'only time will tell',
 			'fans are eagerly awaiting',
 			'delves into',
-			'underscores',
 			'a testament to',
 			'the announcement comes as',
 			'the news comes as',
@@ -444,12 +445,16 @@ class Lunara_Dispatch_Post_Builder {
 			}
 		}
 
-		if ( ! $this->has_originality_signal( $title . ' ' . $text ) ) {
-			return 'no distinct Lunara angle';
-		}
-
-		if ( ! $this->has_reader_pull_signal( $title . ' ' . $text ) ) {
-			return 'no reader-pull or human-stake signal';
+		// These two checks used to be AND-gated (both required), which meant a
+		// genuinely sharp, well-written section could still be auto-rejected
+		// just for not happening to use a word from one of two fixed lists.
+		// Either signal is real evidence of editorial voice on its own, so
+		// requiring just one cuts false rejections without lowering the bar
+		// on stories that show neither.
+		$has_originality = $this->has_originality_signal( $title . ' ' . $text );
+		$has_reader_pull  = $this->has_reader_pull_signal( $title . ' ' . $text );
+		if ( ! $has_originality && ! $has_reader_pull ) {
+			return 'no distinct Lunara angle or reader-pull signal';
 		}
 
 		if ( $this->has_dead_register_density( $title . ' ' . $text ) ) {
