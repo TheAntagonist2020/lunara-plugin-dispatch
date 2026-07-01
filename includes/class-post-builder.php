@@ -384,6 +384,24 @@ class Lunara_Dispatch_Post_Builder {
 	}
 
 	/**
+	 * Multibyte-safe word count. str_word_count() only recognizes ASCII word
+	 * characters, so an accented name (Cuaron, Amelie, Inarritu -- routine in
+	 * film journalism) gets fragmented into extra tokens at each accent,
+	 * inflating the count. Assumes $text already has whitespace trimmed and
+	 * collapsed, which every caller here already does.
+	 *
+	 * @param string $text Already-normalized text.
+	 * @return int
+	 */
+	private function count_words( $text ) {
+		$text = trim( (string) $text );
+		if ( '' === $text ) {
+			return 0;
+		}
+		return count( preg_split( '/\s+/u', $text ) );
+	}
+
+	/**
 	 * Explain why a generated section should not become a Journal draft.
 	 *
 	 * @param string $title Section title.
@@ -407,7 +425,7 @@ class Lunara_Dispatch_Post_Builder {
 			return 'empty text after stripping HTML';
 		}
 
-		if ( str_word_count( $text ) < 75 ) {
+		if ( $this->count_words( $text ) < 75 ) {
 			return 'under 75 words';
 		}
 
@@ -450,10 +468,10 @@ class Lunara_Dispatch_Post_Builder {
 		// just for not happening to use a word from one of two fixed lists.
 		// Either signal is real evidence of editorial voice on its own, so
 		// requiring just one cuts false rejections without lowering the bar
-		// on stories that show neither.
-		$has_originality = $this->has_originality_signal( $title . ' ' . $text );
-		$has_reader_pull  = $this->has_reader_pull_signal( $title . ' ' . $text );
-		if ( ! $has_originality && ! $has_reader_pull ) {
+		// on stories that show neither. Written inline (not pre-assigned to
+		// variables) so && short-circuits and skips the second, pricier
+		// keyword scan once the first signal already passed.
+		if ( ! $this->has_originality_signal( $title . ' ' . $text ) && ! $this->has_reader_pull_signal( $title . ' ' . $text ) ) {
 			return 'no distinct Lunara angle or reader-pull signal';
 		}
 
@@ -480,7 +498,7 @@ class Lunara_Dispatch_Post_Builder {
 			return false;
 		}
 
-		$word_count = str_word_count( $title );
+		$word_count = $this->count_words( $title );
 		if ( $word_count < 4 || $word_count > 16 ) {
 			return false;
 		}
