@@ -60,9 +60,15 @@ class Lunara_Dispatch_Blocks {
             'editor_script' => 'lunara-dispatch-blocks',
             'style'         => 'lunara-dispatch-blocks',
             'supports'      => array(
-                'align'  => array('wide', 'full'),
-                'anchor' => true,
-                'html'   => false,
+                'align'    => array('wide', 'full'),
+                'anchor'   => true,
+                'html'     => false,
+                // Kept registered so any stored block markup still renders,
+                // but hidden from the inserter: the 2026-07 content census
+                // found ZERO posts/pages using these blocks — the Journal
+                // surfaces all render via theme templates/shortcodes — and
+                // the editorial workflow is standardizing on shortcodes.
+                'inserter' => false,
             ),
         );
 
