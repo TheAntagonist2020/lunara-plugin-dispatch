@@ -14,7 +14,6 @@ class Lunara_Dispatch_Blocks {
     public static function init() {
         add_filter('block_categories_all', array(__CLASS__, 'register_category'));
         add_action('init', array(__CLASS__, 'register_blocks'));
-        add_action('enqueue_block_assets', array(__CLASS__, 'enqueue_styles'));
     }
 
     public static function register_category($categories) {
@@ -33,12 +32,8 @@ class Lunara_Dispatch_Blocks {
         return $categories;
     }
 
-    public static function enqueue_styles() {
-        if (!is_admin()) {
-            return;
-        }
-
-        wp_enqueue_style(
+    private static function register_style() {
+        wp_register_style(
             'lunara-dispatch-blocks',
             LUNARA_DISPATCH_URL . 'assets/css/lunara-dispatch-blocks.css',
             array(),
@@ -47,6 +42,7 @@ class Lunara_Dispatch_Blocks {
     }
 
     public static function register_blocks() {
+        self::register_style();
         wp_register_script(
             'lunara-dispatch-blocks',
             LUNARA_DISPATCH_URL . 'assets/js/lunara-dispatch-blocks.js',
@@ -58,17 +54,12 @@ class Lunara_Dispatch_Blocks {
         $common = array(
             'category'      => 'lunara',
             'editor_script' => 'lunara-dispatch-blocks',
-            'style'         => 'lunara-dispatch-blocks',
+            'editor_style'  => 'lunara-dispatch-blocks',
             'supports'      => array(
                 'align'    => array('wide', 'full'),
                 'anchor'   => true,
                 'html'     => false,
-                // Kept registered so any stored block markup still renders,
-                // but hidden from the inserter: the 2026-07 content census
-                // found ZERO posts/pages using these blocks — the Journal
-                // surfaces all render via theme templates/shortcodes — and
-                // the editorial workflow is standardizing on shortcodes.
-                'inserter' => false,
+                'inserter' => true,
             ),
         );
 
@@ -111,11 +102,6 @@ class Lunara_Dispatch_Blocks {
     }
 
     private static function target_post_type() {
-        $configured = sanitize_key((string) get_option('lunara_dispatch_post_type', 'journal'));
-        if ($configured && post_type_exists($configured)) {
-            return $configured;
-        }
-
         return post_type_exists('journal') ? 'journal' : 'post';
     }
 
@@ -167,6 +153,7 @@ class Lunara_Dispatch_Blocks {
     }
 
     public static function render_journal_feed($attributes) {
+        self::enqueue_public_style();
         $layout = isset($attributes['layout']) ? sanitize_key($attributes['layout']) : 'grid';
         if (!in_array($layout, array('grid', 'list', 'rail'), true)) {
             $layout = 'grid';
@@ -189,6 +176,7 @@ class Lunara_Dispatch_Blocks {
     }
 
     public static function render_journal_spotlight($attributes) {
+        self::enqueue_public_style();
         $query = self::query_posts($attributes);
         if (!$query->have_posts()) {
             return '<p class="lunara-journal-empty">' . esc_html__('No Journal entries found yet.', 'lunara-dispatch') . '</p>';
@@ -217,7 +205,12 @@ class Lunara_Dispatch_Blocks {
         <article class="lunara-journal-card lunara-journal-card--<?php echo esc_attr($layout); ?>">
             <?php if ($show_image && has_post_thumbnail()) : ?>
                 <a class="lunara-journal-card__image" href="<?php the_permalink(); ?>">
-                    <?php the_post_thumbnail($layout === 'hero' ? 'large' : 'medium_large', array('loading' => 'lazy')); ?>
+                    <?php
+                    $image_attributes = 'hero' === $layout
+                        ? array('loading' => 'eager', 'fetchpriority' => 'high')
+                        : array('loading' => 'lazy', 'fetchpriority' => 'auto');
+                    the_post_thumbnail($layout === 'hero' ? 'large' : 'medium_large', $image_attributes);
+                    ?>
                 </a>
             <?php endif; ?>
             <div class="lunara-journal-card__body">
@@ -239,6 +232,7 @@ class Lunara_Dispatch_Blocks {
     }
 
     public static function render_journal_lanes($attributes) {
+        self::enqueue_public_style();
         if (!taxonomy_exists('journal_type')) {
             return '';
         }
@@ -273,6 +267,13 @@ class Lunara_Dispatch_Blocks {
         }
         echo '</nav>';
         return ob_get_clean();
+    }
+
+    private static function enqueue_public_style() {
+        if (!wp_style_is('lunara-dispatch-blocks', 'registered')) {
+            self::register_style();
+        }
+        wp_enqueue_style('lunara-dispatch-blocks');
     }
 }
 

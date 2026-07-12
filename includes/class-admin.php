@@ -24,9 +24,8 @@ class Lunara_Dispatch_Admin {
         add_action('admin_init',  array($this, 'register_settings'));
         add_action('admin_init',  array($this, 'handle_sources_post'));
 
-        add_action('wp_ajax_lunara_dispatch_run_now',          array($this, 'ajax_run_dispatch'));
-        add_action('wp_ajax_lunara_dispatch_reset_seen',       array($this, 'ajax_reset_seen_sources'));
-        add_action('wp_ajax_lunara_dispatch_migrate_roundups', array($this, 'ajax_migrate_roundups'));
+        add_action('wp_ajax_lunara_dispatch_run_now',    array($this, 'ajax_run_dispatch'));
+        add_action('wp_ajax_lunara_dispatch_reset_seen', array($this, 'ajax_reset_seen_sources'));
     }
 
     public function add_admin_menu() {
@@ -40,21 +39,42 @@ class Lunara_Dispatch_Admin {
     }
 
     public function register_settings() {
-        $opts = array(
-            'lunara_dispatch_enabled',
-            'lunara_dispatch_post_type',
-            'lunara_dispatch_post_status',
-            'lunara_dispatch_schedule',
-            'lunara_dispatch_provider',
-            'lunara_dispatch_max_tokens',
+        register_setting('lunara_dispatch_options', 'lunara_dispatch_enabled', array(
+            'type' => 'boolean',
+            'sanitize_callback' => static function ($value) { return empty($value) ? 0 : 1; },
+        ));
+        register_setting('lunara_dispatch_options', 'lunara_dispatch_schedule', array(
+            'type' => 'string',
+            'sanitize_callback' => static function ($value) {
+                $value = sanitize_key((string) $value);
+                return in_array($value, array('daily', 'twice_daily', 'every_4_hours', 'every_2_hours'), true) ? $value : 'daily';
+            },
+        ));
+        register_setting('lunara_dispatch_options', 'lunara_dispatch_provider', array(
+            'type' => 'string',
+            'sanitize_callback' => static function ($value) {
+                $value = sanitize_key((string) $value);
+                return in_array($value, array('openai', 'claude', 'gemini', 'grok'), true) ? $value : 'openai';
+            },
+        ));
+        register_setting('lunara_dispatch_options', 'lunara_dispatch_max_tokens', array(
+            'type' => 'integer',
+            'sanitize_callback' => static function ($value) { return max(1024, min(16000, (int) $value)); },
+        ));
 
-            'lunara_dispatch_claude_key',   'lunara_dispatch_claude_model',
-            'lunara_dispatch_openai_key',   'lunara_dispatch_openai_model',
-            'lunara_dispatch_gemini_key',   'lunara_dispatch_gemini_model',
-            'lunara_dispatch_grok_key',     'lunara_dispatch_grok_model',
-        );
-        foreach ($opts as $o) {
-            register_setting('lunara_dispatch_options', $o);
+        foreach (array('claude', 'openai', 'gemini', 'grok') as $provider) {
+            $key_option = 'lunara_dispatch_' . $provider . '_key';
+            register_setting('lunara_dispatch_options', $key_option, array(
+                'type' => 'string',
+                'sanitize_callback' => function ($value) use ($key_option) {
+                    $value = trim(wp_unslash((string) $value));
+                    return '' === $value ? (string) get_option($key_option, '') : sanitize_text_field($value);
+                },
+            ));
+            register_setting('lunara_dispatch_options', 'lunara_dispatch_' . $provider . '_model', array(
+                'type' => 'string',
+                'sanitize_callback' => 'sanitize_text_field',
+            ));
         }
 
         register_setting('lunara_dispatch_options', 'lunara_dispatch_voice_refinement', array(
@@ -103,6 +123,11 @@ class Lunara_Dispatch_Admin {
             return;
         }
 
+        if ( class_exists( 'Lunara_Dispatch_Control_Plane_Client' ) && Lunara_Dispatch_Control_Plane_Client::available() ) {
+            wp_safe_redirect( add_query_arg( 'control-plane-managed', '1', admin_url( 'options-general.php?page=lunara-dispatch-settings' ) ) );
+            exit;
+        }
+
         $rows = isset($_POST['lds_sources']) && is_array($_POST['lds_sources']) ? $_POST['lds_sources'] : array();
         $clean = array();
         foreach ($rows as $row) {
@@ -131,9 +156,12 @@ class Lunara_Dispatch_Admin {
         if (!current_user_can('manage_options')) {
             wp_send_json_error(array('message' => 'Unauthorized'), 403);
         }
-        $result = $this->plugin->run(true);
+        $result = $this->plugin->queue_manual_run();
+        if (is_wp_error($result)) {
+            wp_send_json_error(array('message' => $result->get_error_message()), 500);
+        }
         if (!empty($result['success'])) {
-            wp_send_json_success($result);
+            wp_send_json_success($result, 202);
         }
         wp_send_json_error($result, 500);
     }
@@ -143,6 +171,7 @@ class Lunara_Dispatch_Admin {
         if (!current_user_can('manage_options')) {
             wp_send_json_error(array('message' => 'Unauthorized'), 403);
         }
+        $this->plugin->ensure_services();
         $count = $this->plugin->feed_fetcher->clear_seen_sources();
         wp_send_json_success(array(
             'message'        => 'Seen-sources tracker cleared. Run Now will treat all RSS items as fresh.',
@@ -150,28 +179,15 @@ class Lunara_Dispatch_Admin {
         ));
     }
 
-    public function ajax_migrate_roundups() {
-        check_ajax_referer('lunara_dispatch_migrate_roundups', 'nonce');
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => 'Unauthorized'), 403);
-        }
-        $dry_run = !empty($_POST['dry_run']);
-        $limit   = isset($_POST['limit']) ? max(1, (int) $_POST['limit']) : 50;
-        $result  = $this->plugin->post_builder->migrate_roundups($dry_run, $limit);
-
-        $result['dry_run'] = $dry_run;
-        $result['message'] = $dry_run
-            ? sprintf('DRY RUN: %d roundup post(s) would be split (originals will be renamed to "Lunara Journal Archive — [date]" and tagged Archive).', count($result['preview']))
-            : sprintf('Migration complete. Split %d roundups into %d individual posts.', $result['migrated'], $result['created']);
-        wp_send_json_success($result);
-    }
-
     /* ──────────────────────────── RENDER ─────────────────────────────── */
 
     public function settings_page() {
-        $provider       = sanitize_key(get_option('lunara_dispatch_provider', 'claude'));
-        $schedule_value = get_option('lunara_dispatch_schedule', 'daily');
-        $post_status    = sanitize_key(get_option('lunara_dispatch_post_status', 'draft'));
+        $this->plugin->ensure_services();
+        $runtime        = class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::runtime_config() : array();
+        $foundation_ready = class_exists('Lunara_Journal_Control_Plane') && class_exists('Lunara_Dispatch_Control_Plane_Client') && Lunara_Dispatch_Control_Plane_Client::available();
+        $provider       = isset($runtime['provider']) ? sanitize_key((string) $runtime['provider']) : sanitize_key(get_option('lunara_dispatch_provider', 'openai'));
+        $schedule_value = isset($runtime['schedule']) ? sanitize_key((string) $runtime['schedule']) : get_option('lunara_dispatch_schedule', 'daily');
+        $post_status    = 'draft';
         $sources        = Lunara_Dispatch_Sources::all();
         if (empty($sources)) {
             $sources = Lunara_Dispatch_Sources::defaults();
@@ -196,7 +212,9 @@ class Lunara_Dispatch_Admin {
         $status_label = method_exists($this->plugin, 'get_status_label') ? $this->plugin->get_status_label($post_status) : $post_status;
         $system_prompt = class_exists('Lunara_Dispatch_Prompts') ? Lunara_Dispatch_Prompts::system_prompt() : '';
         $prompt_override = get_option('lunara_dispatch_system_prompt_override', '');
-        $prompt_mode = '' !== trim((string) $prompt_override) ? 'Full override active' : 'Default prompt active';
+        $prompt_mode = $foundation_ready
+            ? 'Journal Control Plane config ' . sanitize_text_field((string) ($runtime['config_version'] ?? 'active'))
+            : 'Unavailable - Journal Foundation is required';
 
         $providers = array(
             'claude' => 'Anthropic Claude',
@@ -208,6 +226,12 @@ class Lunara_Dispatch_Admin {
         <div style="background-color: #0a1520; color: #ffffff; padding: 20px; font-family: Georgia, serif; line-height: 1.7;">
             <h1 style="color: #c9a961; font-family: 'Trebuchet MS', sans-serif; text-transform: uppercase;">Lunara Dispatch Automation</h1>
             <p style="color:#cccccc;">Multi-source film-news aggregation, written in the Lunara Journal voice. Each Journal story becomes its own <?php echo esc_html($status_label); ?> post with a safe available source image set as featured.</p>
+            <div style="margin:16px 0 22px; padding:14px 18px; border:1px solid rgba(201,169,97,.35); background:rgba(201,169,97,.08); color:#ffffff;">
+                <strong>Managed by Journal Control Plane.</strong> Runtime settings, sources, prompts, provider selection, schedule, target post type, and publish behavior are now governed from <a style="color:#c9a961;" href="<?php echo esc_url(admin_url('edit.php?post_type=journal&page=lunara-journal-control-plane')); ?>">Journal → Control Plane</a>. This screen remains useful for API key storage, diagnostics, manual runs, and legacy visibility.
+            </div>
+            <?php if ( isset($_GET['control-plane-managed']) ) : ?>
+                <div style="margin:0 0 22px; padding:12px 18px; border-left:4px solid #c9a961; background:#111f2d; color:#fff;">Source edits are now made in Journal → Control Plane so Dispatch and ChatGPT read the same source list.</div>
+            <?php endif; ?>
 
             <div style="margin:20px 0 28px; padding:18px 20px; border:1px solid rgba(201,169,97,.22); background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));">
                 <h2 style="color:#c9a961; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; margin:0 0 10px;">Automation Health</h2>
@@ -215,7 +239,8 @@ class Lunara_Dispatch_Admin {
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Next scheduled run:</strong> <?php echo esc_html($next_run); ?></p>
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Last completed run:</strong> <?php echo esc_html($last_run); ?></p>
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Active sources:</strong> <?php echo esc_html((string) count($enabled_sources)); ?><?php if (!empty($enabled_sources)) : ?> — <?php echo esc_html(implode(', ', array_map(function ($src) { return (string) ($src['label'] ?? 'Source'); }, $enabled_sources))); ?><?php endif; ?></p>
-                <p style="margin:0 0 8px; color:#cccccc;"><strong>Live post behavior:</strong> New Journal entries are currently created as <code style="color:#c9a961;"><?php echo esc_html($post_status); ?></code>.</p>
+                <p style="margin:0 0 8px; color:<?php echo $foundation_ready ? '#cccccc' : '#ffb4a8'; ?>;"><strong>Journal Foundation dependency:</strong> <?php echo esc_html($foundation_ready ? 'Ready' : 'Required plugin missing or protocol-incompatible; draft creation is stopped'); ?></p>
+                <p style="margin:0 0 8px; color:#cccccc;"><strong>Live post behavior:</strong> New Journal entries are forcibly created as <code style="color:#c9a961;">draft</code> through the Control Plane.</p>
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Last topic-overlap skips:</strong> <?php echo esc_html((string) $last_topic_skips); ?></p>
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Last quality-gate skips:</strong> <?php echo esc_html((string) $last_quality_skips); ?></p>
                 <?php if (!empty($last_quality_skip_rows)) : ?>
@@ -238,19 +263,8 @@ class Lunara_Dispatch_Admin {
                 <h2 style="color:#c9a961; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; border-bottom:1px solid #c9a961; padding-bottom:6px;">General</h2>
                 <table style="width:100%;">
                     <?php $this->row('Enable Automation', '<input type="checkbox" name="lunara_dispatch_enabled" value="1" ' . checked(1, get_option('lunara_dispatch_enabled'), false) . ' />'); ?>
-                    <?php $this->row('Target Post Type',
-                        '<input type="text" name="lunara_dispatch_post_type" value="' . esc_attr(get_option('lunara_dispatch_post_type', 'journal')) . '" style="' . $this->input_style() . '" />'
-                        . '<p style="color:#cccccc;font-size:13px;margin:6px 0 0;">CPT slug. Default: <code style="color:#c9a961;">journal</code></p>'
-                    ); ?>
                     <?php
-                    $status_opts = '';
-                    foreach (array('draft' => 'Draft', 'pending' => 'Pending Review', 'publish' => 'Publish Live', 'private' => 'Private') as $val => $label) {
-                        $status_opts .= '<option value="' . esc_attr($val) . '" ' . selected($post_status, $val, false) . '>' . esc_html($label) . '</option>';
-                    }
-                    $this->row('Publishing Mode',
-                        '<select name="lunara_dispatch_post_status" style="' . $this->input_style(300) . '">' . $status_opts . '</select>'
-                        . '<p style="color:#cccccc;font-size:13px;margin:6px 0 0;">Choose whether automation creates drafts, pending items, private entries, or publishes straight to the site.</p>'
-                    );
+                    $this->row('Editorial Destination', '<strong style="color:#fff;">Journal drafts only</strong><p style="color:#cccccc;font-size:13px;margin:6px 0 0;">Dispatch cannot publish or target another post type. Final publication always remains a human editorial action.</p>');
 
                     $opts = '';
                     foreach (array('daily' => 'Daily', 'twice_daily' => 'Twice Daily (every 12h)', 'every_4_hours' => 'Every 4 Hours', 'every_2_hours' => 'Every 2 Hours') as $val => $label) {
@@ -325,22 +339,13 @@ class Lunara_Dispatch_Admin {
             </form>
 
             <h2 style="color:#c9a961; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; border-bottom:1px solid #c9a961; padding-bottom:6px; margin-top:40px;">Manual Run</h2>
-            <p style="color:#cccccc;">Bypasses the Enable Automation toggle. Aggregates all enabled sources, calls the active AI provider, sideloads images, and creates one Journal post per story using the current publishing mode.</p>
+            <p style="color:#cccccc;">Queues a bounded background run immediately. Dispatch creates Journal drafts only; publishing remains a manual editorial decision.</p>
             <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
-                <button id="lunara-dispatch-run-now" type="button" style="background-color:#c9a961; color:#0a1520; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; border:none; padding:10px 20px; cursor:pointer;">Run Now</button>
+                <button id="lunara-dispatch-run-now" type="button" <?php disabled(!$foundation_ready); ?> style="background-color:#c9a961; color:#0a1520; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; border:none; padding:10px 20px; cursor:pointer;"><?php echo esc_html($foundation_ready ? 'Queue Run' : 'Foundation Required'); ?></button>
                 <button id="lunara-dispatch-reset-seen" type="button" style="background-color:transparent; color:#c9a961; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; border:1px solid #c9a961; padding:10px 20px; cursor:pointer;">Reset Seen Sources</button>
             </div>
             <div id="lunara-dispatch-message" style="margin-top:10px; color:#ffffff;"></div>
 
-            <h2 style="color:#c9a961; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; border-bottom:1px solid #c9a961; padding-bottom:6px; margin-top:40px;">Migrate Roundups → Individual Posts</h2>
-            <p style="color:#cccccc;">Splits existing journal posts that have multiple <code style="color:#c9a961;">&lt;h2&gt;</code> sections into individual entries. Originals renamed "Lunara Journal Archive — [date]" and tagged Archive. Always preview first.</p>
-            <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
-                <button id="lunara-dispatch-migrate-preview" type="button" style="background-color:transparent; color:#c9a961; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; border:1px solid #c9a961; padding:10px 20px; cursor:pointer;">Preview Migration</button>
-                <button id="lunara-dispatch-migrate-run" type="button" style="background-color:#c9a961; color:#0a1520; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; border:none; padding:10px 20px; cursor:pointer;">Migrate Now</button>
-                <label style="color:#cccccc; font-size:13px;">Limit: <input type="number" id="lunara-dispatch-migrate-limit" value="50" min="1" max="500" style="width:80px; background:#1a2938; color:#fff; border:1px solid #c9a961; padding:4px 8px;" /></label>
-            </div>
-            <div id="lunara-dispatch-migrate-message" style="margin-top:10px; color:#ffffff; font-size:13px;"></div>
-            <div id="lunara-dispatch-migrate-preview-list" style="margin-top:14px; max-height:400px; overflow-y:auto;"></div>
         </div>
 
         <?php $this->print_template_row(); ?>
@@ -360,18 +365,16 @@ class Lunara_Dispatch_Admin {
     }
 
     private function provider_block($title, $key, $default_model, $placeholder) {
-        $stored_key   = (string) get_option('lunara_dispatch_' . $key . '_key', '');
         $stored_model = (string) get_option('lunara_dispatch_' . $key . '_model', $default_model);
-        $masked       = $stored_key !== '' ? substr($stored_key, 0, 8) . str_repeat('•', 18) . substr($stored_key, -4) : '';
+        $configured   = class_exists('Lunara_Dispatch_AI_Client') && Lunara_Dispatch_AI_Client::secret_is_configured($key);
         ?>
         <h3 style="color:#c9a961; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; margin-top:24px;"><?php echo esc_html($title); ?></h3>
         <table style="width:100%;">
             <?php
             $key_field = '';
-            if ($masked !== '') {
-                $key_field .= '<p style="color:#cccccc; font-size:13px; margin:0 0 6px;">Stored: <code style="color:#c9a961;">' . esc_html($masked) . '</code></p>';
-            }
-            $key_field .= '<input type="password" name="lunara_dispatch_' . esc_attr($key) . '_key" value="' . esc_attr($stored_key) . '" autocomplete="new-password" placeholder="' . esc_attr($placeholder) . '" style="' . $this->input_style() . '" />';
+            $key_field .= '<p style="color:#cccccc; font-size:13px; margin:0 0 6px;">Status: <strong style="color:#c9a961;">' . ($configured ? 'configured' : 'not configured') . '</strong></p>';
+            $key_field .= '<input type="password" name="lunara_dispatch_' . esc_attr($key) . '_key" value="" autocomplete="new-password" placeholder="' . esc_attr($configured ? 'Leave blank to keep current secret' : $placeholder) . '" style="' . $this->input_style() . '" />';
+            $key_field .= '<p style="color:#cccccc; font-size:13px; margin:6px 0 0;">Server constant/environment credentials take precedence. Secret values are never rendered back into this page.</p>';
 
             $this->row('API Key', $key_field);
             $this->row('Model',
@@ -418,7 +421,6 @@ class Lunara_Dispatch_Admin {
     private function print_admin_js() {
         $run_nonce      = wp_create_nonce('lunara_dispatch_run_now');
         $reset_nonce    = wp_create_nonce('lunara_dispatch_reset_seen');
-        $migrate_nonce  = wp_create_nonce('lunara_dispatch_migrate_roundups');
         ?>
         <script>
         jQuery(function($){
@@ -434,10 +436,10 @@ class Lunara_Dispatch_Admin {
 
             // Run Now
             $('#lunara-dispatch-run-now').on('click', function(){
-                var $btn = $(this).prop('disabled', true).text('Running...');
-                $('#lunara-dispatch-message').text('Aggregating feeds and calling the AI — this can take up to 90 seconds…').css('color','#c9a961');
+                var $btn = $(this).prop('disabled', true).text('Queueing...');
+                $('#lunara-dispatch-message').text('Queueing a background Dispatch run...').css('color','#c9a961');
                 $.ajax({
-                    url: ajaxurl, type:'POST', dataType:'json', timeout: 180000,
+                    url: ajaxurl, type:'POST', dataType:'json', timeout: 30000,
                     data: { action:'lunara_dispatch_run_now', nonce: '<?php echo esc_js($run_nonce); ?>' },
                     success: function(r){
                         if (r.success && r.data) {
@@ -467,7 +469,7 @@ class Lunara_Dispatch_Admin {
                         }
                         $('#lunara-dispatch-message').text(t).css('color','#ff0000');
                     },
-                    complete: function(){ $btn.prop('disabled', false).text('Run Now'); }
+                    complete: function(){ $btn.prop('disabled', false).text('Queue Run'); }
                 });
             });
 
@@ -489,56 +491,15 @@ class Lunara_Dispatch_Admin {
                 });
             });
 
-            // Migrate
-            function migrate(dry){
-                var $p = $('#lunara-dispatch-migrate-preview'), $r = $('#lunara-dispatch-migrate-run');
-                var $msg = $('#lunara-dispatch-migrate-message'), $list = $('#lunara-dispatch-migrate-preview-list');
-                var limit = parseInt($('#lunara-dispatch-migrate-limit').val(), 10) || 50;
-                $p.prop('disabled', true); $r.prop('disabled', true);
-                $msg.text(dry ? 'Scanning…' : 'Splitting…').css('color','#c9a961');
-                $list.empty();
-                $.ajax({
-                    url: ajaxurl, type:'POST', dataType:'json', timeout: 120000,
-                    data: { action:'lunara_dispatch_migrate_roundups', nonce:'<?php echo esc_js($migrate_nonce); ?>', dry_run: dry?1:0, limit: limit },
-                    success: function(r){
-                        if (r.success && r.data) {
-                            var d = r.data;
-                            $msg.text(d.message + ' (Scanned ' + d.scanned + ', Skipped ' + d.skipped + ')').css('color','#c9a961');
-                            if (Array.isArray(d.preview) && d.preview.length) {
-                                var html = '<h3 style="color:#c9a961; font-family:\'Trebuchet MS\',sans-serif; margin:14px 0 8px;">' + (dry ? 'WOULD SPLIT' : 'SPLIT') + ':</h3><ul style="list-style:disc; padding-left:24px; color:#ccc;">';
-                                d.preview.forEach(function(it){
-                                    html += '<li style="margin-bottom:8px;"><strong style="color:#fff;">[#' + it.id + '] ' + (it.title || '(untitled)') + '</strong><br><span style="font-size:12px; color:#999;">→ ' + it.sections.length + ' section(s): ' + it.sections.join(' | ') + '</span></li>';
-                                });
-                                html += '</ul>';
-                                $list.html(html);
-                            }
-                        }
-                    },
-                    error: function(xhr){
-                        var t = 'Error: Migration failed.';
-                        if (xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
-                            t = 'Error: ' + xhr.responseJSON.data.message;
-                        }
-                        $msg.text(t).css('color','#ff0000');
-                    },
-                    complete: function(){ $p.prop('disabled', false); $r.prop('disabled', false); }
-                });
-            }
-            $('#lunara-dispatch-migrate-preview').on('click', function(){ migrate(true); });
-            $('#lunara-dispatch-migrate-run').on('click', function(){
-                var lim = $('#lunara-dispatch-migrate-limit').val();
-                if (!confirm('Split up to ' + lim + ' roundup post(s) into individual entries? Originals will be archived.')) return;
-                migrate(false);
-            });
         });
         </script>
         <?php
     }
 
     private function render_visual_assignment_queue() {
-        $post_type = method_exists($this->plugin, 'post_builder') ? 'journal' : sanitize_key((string) get_option('lunara_dispatch_post_type', 'journal'));
-        if (empty($post_type) || !post_type_exists($post_type)) {
-            $post_type = 'post';
+        $post_type = 'journal';
+        if (!post_type_exists($post_type)) {
+            return;
         }
 
         $query = new WP_Query(array(

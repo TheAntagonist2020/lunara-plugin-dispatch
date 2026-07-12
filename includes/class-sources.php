@@ -29,14 +29,14 @@ class Lunara_Dispatch_Sources {
      */
     public static function defaults() {
         return array(
-            array('id' => 'world-of-reel', 'label' => 'World of Reel', 'url' => 'https://www.worldofreel.com/blog?format=rss',         'enabled' => true, 'max' => 10),
-            array('id' => 'entertainment-weekly-movies', 'label' => 'Entertainment Weekly Movies', 'url' => 'https://feeds-api.dotdashmeredith.com/v1/rss/google/defadcea-6edf-45ce-88f1-eabd71a81843', 'enabled' => true, 'max' => 10),
-            array('id' => 'deadline',      'label' => 'Deadline',      'url' => 'https://deadline.com/v/film/feed/',                    'enabled' => true, 'max' => 10),
-            array('id' => 'variety',       'label' => 'Variety',       'url' => 'https://variety.com/v/film/feed/',                     'enabled' => true, 'max' => 10),
-            array('id' => 'indiewire',     'label' => 'IndieWire',     'url' => 'https://www.indiewire.com/feed/',                      'enabled' => true, 'max' => 10),
-            array('id' => 'film-stage',    'label' => 'The Film Stage', 'url' => 'https://thefilmstage.com/feed/',                       'enabled' => true, 'max' => 10),
-            array('id' => 'the-playlist',  'label' => 'The Playlist',  'url' => 'https://theplaylist.net/feed/',                        'enabled' => true, 'max' => 10),
-            array('id' => 'screen-daily',  'label' => 'Screen Daily',  'url' => 'https://www.screendaily.com/XmlServers/navsectionRSS.aspx?navsectioncode=4523', 'enabled' => true, 'max' => 10),
+            array('id' => 'world-of-reel', 'label' => 'World of Reel', 'url' => 'https://www.worldofreel.com/blog?format=rss', 'enabled' => true, 'max' => 10, 'priority' => 4, 'image_reuse_allowed' => false),
+            array('id' => 'entertainment-weekly-movies', 'label' => 'Entertainment Weekly Movies', 'url' => 'https://feeds-api.dotdashmeredith.com/v1/rss/google/defadcea-6edf-45ce-88f1-eabd71a81843', 'enabled' => true, 'max' => 10, 'priority' => 5, 'image_reuse_allowed' => false),
+            array('id' => 'deadline', 'label' => 'Deadline', 'url' => 'https://deadline.com/v/film/feed/', 'enabled' => true, 'max' => 10, 'priority' => 7, 'image_reuse_allowed' => false),
+            array('id' => 'variety', 'label' => 'Variety', 'url' => 'https://variety.com/v/film/feed/', 'enabled' => true, 'max' => 10, 'priority' => 7, 'image_reuse_allowed' => false),
+            array('id' => 'indiewire', 'label' => 'IndieWire', 'url' => 'https://www.indiewire.com/feed/', 'enabled' => true, 'max' => 10, 'priority' => 6, 'image_reuse_allowed' => false),
+            array('id' => 'film-stage', 'label' => 'The Film Stage', 'url' => 'https://thefilmstage.com/feed/', 'enabled' => true, 'max' => 10, 'priority' => 6, 'image_reuse_allowed' => false),
+            array('id' => 'the-playlist', 'label' => 'The Playlist', 'url' => 'https://theplaylist.net/feed/', 'enabled' => true, 'max' => 10, 'priority' => 5, 'image_reuse_allowed' => false),
+            array('id' => 'screen-daily', 'label' => 'Screen Daily', 'url' => 'https://www.screendaily.com/XmlServers/navsectionRSS.aspx?navsectioncode=4523', 'enabled' => true, 'max' => 10, 'priority' => 5, 'image_reuse_allowed' => false),
         );
     }
 
@@ -51,6 +51,12 @@ class Lunara_Dispatch_Sources {
      * Get all sources (always returns array of normalized records).
      */
     public static function all() {
+        if ( class_exists( 'Lunara_Dispatch_Control_Plane_Client' ) && method_exists( 'Lunara_Dispatch_Control_Plane_Client', 'available' ) && Lunara_Dispatch_Control_Plane_Client::available() ) {
+            $runtime = Lunara_Dispatch_Control_Plane_Client::runtime_config();
+            if ( ! empty( $runtime['sources'] ) && is_array( $runtime['sources'] ) ) {
+                return self::normalize_runtime_sources( $runtime['sources'] );
+            }
+        }
         $raw = get_option(self::OPTION, array());
         if (!is_array($raw)) {
             return array();
@@ -66,6 +72,46 @@ class Lunara_Dispatch_Sources {
                 'url'     => esc_url_raw($row['url']),
                 'enabled' => !empty($row['enabled']),
                 'max'     => isset($row['max']) ? max(1, min(50, (int) $row['max'])) : 10,
+                'priority' => isset($row['priority']) ? max(1, min(10, (int) $row['priority'])) : 5,
+                'image_reuse_allowed' => !empty($row['image_reuse_allowed']),
+            );
+        }
+        return $out;
+    }
+
+    /**
+     * Normalize the authoritative Control Plane source list into the compact
+     * records consumed by the existing feed fetcher and admin diagnostics.
+     */
+    public static function normalize_runtime_sources( array $sources ) {
+        $out = array();
+        foreach ( $sources as $row ) {
+            if ( ! is_array( $row ) || empty( $row['url'] ) ) {
+                continue;
+            }
+
+            $url = esc_url_raw( $row['url'] );
+            if ( empty( $url ) ) {
+                continue;
+            }
+
+            $label = isset( $row['label'] ) ? sanitize_text_field( $row['label'] ) : 'Unnamed Feed';
+            $id = isset( $row['id'] ) ? sanitize_key( $row['id'] ) : '';
+            if ( '' === $id ) {
+                $id = sanitize_key( $label );
+            }
+            if ( '' === $id ) {
+                $id = sanitize_key( wp_generate_password( 8, false ) );
+            }
+
+            $out[] = array(
+                'id'       => $id,
+                'label'    => '' !== $label ? $label : 'Unnamed Feed',
+                'url'      => $url,
+                'enabled'  => ! empty( $row['enabled'] ),
+                'max'      => isset( $row['max'] ) ? max( 1, min( 50, (int) $row['max'] ) ) : 10,
+                'priority' => isset( $row['priority'] ) ? max( 1, min( 10, (int) $row['priority'] ) ) : 5,
+                'image_reuse_allowed' => ! empty( $row['image_reuse_allowed'] ),
             );
         }
         return $out;
@@ -106,6 +152,8 @@ class Lunara_Dispatch_Sources {
                 'url'     => $url,
                 'enabled' => !empty($row['enabled']),
                 'max'     => isset($row['max']) ? max(1, min(50, (int) $row['max'])) : 10,
+                'priority' => isset($row['priority']) ? max(1, min(10, (int) $row['priority'])) : 5,
+                'image_reuse_allowed' => !empty($row['image_reuse_allowed']),
             );
         }
         update_option(self::OPTION, $clean, false);

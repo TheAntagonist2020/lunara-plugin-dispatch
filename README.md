@@ -4,7 +4,7 @@ Private WordPress plugin source for the Lunara Film Dispatch automation system.
 
 ## Role
 
-Dispatch aggregates film-news sources, routes eligible items through the Lunara editorial prompt, creates draft Journal posts, manages source/image eligibility signals, and exposes admin controls for voice/prompt refinement and visual assignment.
+Dispatch aggregates film-news sources, routes eligible items through the Lunara editorial prompt, and hands verified draft payloads to Lunara Journal Foundation. Journal Foundation is a required dependency and is the only component allowed to create the canonical Journal drafts.
 
 ## Source Locations
 
@@ -14,7 +14,7 @@ Dispatch aggregates film-news sources, routes eligible items through the Lunara 
 
 ## Version
 
-Current baseline: `3.0.13`.
+Current baseline: `3.2.1`.
 
 ## Editorial Quality Gate
 
@@ -32,3 +32,40 @@ Do not commit provider API keys, WordPress application passwords, option exports
 - Confirm the Dispatch admin settings screen loads.
 - Confirm public routes do not leak Dispatch admin/prompt content.
 - Run automation in draft/no-publish mode first after prompt, image, source, or provider changes.
+
+## 3.1.1 Source Runtime Hotfix
+
+- Restores the missing Control Plane source normalizer used by the Dispatch settings screen and feed runtime.
+- Prevents the legacy fallback path from recursively calling the unavailable Control Plane client.
+- Adds regression tests for both Control Plane and legacy source loading.
+
+## 3.1.0 Control Plane Integration
+
+Dispatch now reads runtime configuration from LUNARA Journal Foundation when the Journal Control Plane is active.
+
+- Target post type is forced to `journal`.
+- Creation status is forced to `draft`.
+- Provider, model, max tokens, schedule, sources, and prompts are consumed from `Journal → Control Plane`.
+- Existing API key options remain stored separately and are never exported by the Control Plane.
+- New Journal drafts receive Control Plane provenance metadata.
+- The legacy Dispatch settings screen remains useful for diagnostics, manual runs, and API-key visibility, but runtime governance lives in the Control Plane.
+
+
+## 3.2.0 Fast Journal Desk
+
+Adds an asynchronous manual-run queue used by the private LUNARA GPT. `queue_manual_run()` schedules `lunara_dispatch_manual_requested`, spawns WordPress cron, and returns immediately. The actual run still uses the authoritative Control Plane and always creates Journal drafts.
+
+## 3.2.1 Stabilized Journal Integration
+
+- Keeps the scheduled worker aligned with each activated Journal Control Plane configuration.
+- Uses an atomic owner-token lock, heartbeat, conditional release, run IDs, and bounded outcome history.
+- Queues Settings runs asynchronously and sends every generated entry through Journal Foundation's same-process, draft-only ingest contract.
+- Uses a source-stable idempotency key so retries reuse the verified Journal draft instead of creating duplicates.
+- Requires Journal Foundation and fails closed when it is absent, deactivated, protocol-incompatible, or missing its ingest handler. Dispatch has no standalone Journal insert fallback.
+- Bounds prioritized source input, provider payloads, remote response sizes, and image downloads.
+- Resolves provider secrets from server constants or environment variables before legacy WordPress options; admin screens show presence only.
+- Downloads images only after a draft passes editorial gates and only when the source permits reuse and the individual feed asset includes a credit, license, and public rights URL. Image bytes, dimensions, and decoded pixels are all bounded.
+- Restores the packaged dynamic Journal blocks as editable inserter-visible blocks with route-scoped public styling.
+- Retires the legacy Dispatch roundup splitter. Existing-content conversion belongs to Journal Foundation's read-only preview and explicit confirmation flow.
+
+Recommended server secret names: `LUNARA_DISPATCH_CLAUDE_API_KEY`, `LUNARA_DISPATCH_OPENAI_API_KEY`, `LUNARA_DISPATCH_GEMINI_API_KEY`, and `LUNARA_DISPATCH_GROK_API_KEY`.

@@ -29,12 +29,11 @@ class Lunara_Dispatch_Post_Builder {
 	 */
 	private $last_quality_gate_skips = array();
 
+	/** @var array */
+	private $last_insertion_failures = array();
+
 	public function get_target_post_type() {
-		$pt = sanitize_key( get_option( 'lunara_dispatch_post_type', 'journal' ) );
-		if ( empty( $pt ) || ! post_type_exists( $pt ) ) {
-			return 'post';
-		}
-		return $pt;
+		return 'journal';
 	}
 
 	/**
@@ -207,10 +206,17 @@ class Lunara_Dispatch_Post_Builder {
 	 * @param string $post_status Post status.
 	 * @return array
 	 */
-	public function split_into_individual_posts( $html, array $section_image_map, $post_type, $post_status = 'draft' ) {
+	public function split_into_individual_posts( $html, array $section_image_map, $post_type, $post_status = 'draft', array $run_context = array() ) {
 		$created                           = array();
+		$post_status                       = 'draft';
+		$post_type                         = 'journal';
 		$this->last_topic_duplicate_skips  = array();
 		$this->last_quality_gate_skips     = array();
+		$this->last_insertion_failures     = array();
+		if ( ! post_type_exists( $post_type ) ) {
+			error_log( 'Lunara Dispatch: Journal post type is unavailable; refusing to create fallback posts.' );
+			return $created;
+		}
 		$sections                          = $this->extract_sections_with_body( $html );
 		if ( empty( $sections ) ) {
 			return $created;
@@ -220,7 +226,7 @@ class Lunara_Dispatch_Post_Builder {
 		$recent_signatures = $this->get_recent_topic_signatures( $post_type );
 		$run_signatures    = array();
 
-		foreach ( $sections as $section ) {
+		foreach ( $sections as $section_index => $section ) {
 			$title = trim( $section['title'] );
 			$body  = trim( $section['body'] );
 			$quality_failure = $this->publishable_section_failure( $title, $body );
@@ -267,19 +273,16 @@ class Lunara_Dispatch_Post_Builder {
 
 			$slug     = sanitize_title( $title );
 			$featured = isset( $section_image_map[ $slug ] ) ? (int) $section_image_map[ $slug ] : 0;
-
-			$new_id = wp_insert_post(
-				array(
-					'post_title'   => $title,
-					'post_content' => $body,
-					'post_status'  => $post_status,
-					'post_type'    => $post_type,
-					'post_author'  => $author,
-				),
-				true
-			);
+			$payload = Lunara_Dispatch_Journal_Ingest_Bridge::build_payload( $title, $body, $run_context, (int) $section_index );
+			$payload['featured_media'] = $featured;
+			$ingest  = Lunara_Dispatch_Journal_Ingest_Bridge::ingest_payload( $payload, $author, $run_context );
+			$new_id  = is_wp_error( $ingest ) ? $ingest : (int) $ingest['post_id'];
 
 			if ( is_wp_error( $new_id ) || ! $new_id ) {
+				$this->last_insertion_failures[] = array(
+					'title' => $title,
+					'reason' => is_wp_error( $new_id ) ? $new_id->get_error_message() : 'unknown insert failure',
+				);
 				error_log(
 					'Lunara Dispatch: failed to create post "' . $title . '": ' .
 					( is_wp_error( $new_id ) ? $new_id->get_error_message() : 'unknown error' )
@@ -296,9 +299,21 @@ class Lunara_Dispatch_Post_Builder {
 				$this->store_visual_assignment_brief( $new_id, $title, $body );
 			}
 
+			update_post_meta( $new_id, '_lunara_dispatch_editorial_state', 'needs_review' );
+			if ( ! empty( $run_context['run_id'] ) ) {
+				update_post_meta( $new_id, '_lunara_dispatch_run_id', sanitize_text_field( (string) $run_context['run_id'] ) );
+			}
+			$source_urls = array_values( array_unique( array_filter( array_map( static function ( $item ) {
+				return is_array( $item ) && ! empty( $item['source_url'] ) ? esc_url_raw( $item['source_url'] ) : '';
+			}, $payload['source_items'] ) ) ) );
+			update_post_meta( $new_id, '_lunara_dispatch_source_urls', array_slice( $source_urls, 0, 3 ) );
+			update_post_meta( $new_id, '_lunara_dispatch_prompt_hash', hash( 'sha256', Lunara_Dispatch_Prompts::system_prompt() . "\n" . Lunara_Dispatch_Prompts::user_directive_prompt() ) );
+
 			$signature['post_id'] = (int) $new_id;
 			$run_signatures[]     = $signature;
-			$created[]            = (int) $new_id;
+			if ( ! in_array( (int) $new_id, $created, true ) ) {
+				$created[] = (int) $new_id;
+			}
 		}
 
 		return $created;
@@ -370,6 +385,10 @@ class Lunara_Dispatch_Post_Builder {
 	 */
 	public function get_last_quality_gate_skips() {
 		return $this->last_quality_gate_skips;
+	}
+
+	public function get_last_insertion_failures() {
+		return $this->last_insertion_failures;
 	}
 
 	/**
@@ -1018,139 +1037,16 @@ class Lunara_Dispatch_Post_Builder {
 	 * @return array
 	 */
 	public function migrate_roundups( $dry_run = true, $limit = 50 ) {
-		$post_type = $this->get_target_post_type();
-		$query     = new WP_Query(
-			array(
-				'post_type'      => $post_type,
-				'post_status'    => array( 'publish', 'draft' ),
-				'posts_per_page' => max( 1, (int) $limit ),
-				'orderby'        => 'date',
-				'order'          => 'DESC',
-				'no_found_rows'  => true,
-			)
+		unset( $dry_run, $limit );
+		return array(
+			'scanned'  => 0,
+			'migrated' => 0,
+			'created'  => 0,
+			'skipped'  => 0,
+			'preview'  => array(),
+			'disabled' => true,
+			'message'  => 'Dispatch legacy splitting is retired. Use Journal Foundation migration preview and explicit confirmation.',
 		);
 
-		$scanned  = 0;
-		$migrated = 0;
-		$created  = 0;
-		$skipped  = 0;
-		$preview  = array();
-
-		if ( ! $query->have_posts() ) {
-			return compact( 'scanned', 'migrated', 'created', 'skipped', 'preview' );
-		}
-
-		while ( $query->have_posts() ) {
-			$query->the_post();
-			$post_id = get_the_ID();
-			$content = get_the_content();
-			$title   = get_the_title();
-			$scanned++;
-
-			$sections = $this->extract_sections_with_body( $content );
-			if ( count( $sections ) < 2 ) {
-				$skipped++;
-				continue;
-			}
-
-			$section_image_map = get_post_meta( $post_id, '_lunara_journal_section_images', true );
-			if ( ! is_array( $section_image_map ) ) {
-				$section_image_map = array();
-			}
-			$fallback_image = (int) get_post_thumbnail_id( $post_id );
-
-			$preview[] = array(
-				'id'       => $post_id,
-				'title'    => $title,
-				'sections' => array_map(
-					function( $section ) {
-						return $section['title'];
-					},
-					$sections
-				),
-			);
-
-			if ( $dry_run ) {
-				continue;
-			}
-
-			$original_status = get_post_status( $post_id );
-			$original_date   = get_the_date( 'Y-m-d H:i:s', $post_id );
-			$original_terms  = wp_get_object_terms( $post_id, 'journal_type', array( 'fields' => 'ids' ) );
-			if ( is_wp_error( $original_terms ) ) {
-				$original_terms = array();
-			}
-
-			$new_ids = array();
-			foreach ( $sections as $section ) {
-				$sec_title = trim( $section['title'] );
-				$sec_body  = trim( $section['body'] );
-				if ( '' === $sec_title ) {
-					continue;
-				}
-
-				$sec_slug = sanitize_title( $sec_title );
-				$sec_img  = isset( $section_image_map[ $sec_slug ] ) ? (int) $section_image_map[ $sec_slug ] : $fallback_image;
-
-				$new_id = wp_insert_post(
-					array(
-						'post_title'    => $sec_title,
-						'post_content'  => $sec_body,
-						'post_status'   => $original_status,
-						'post_type'     => $post_type,
-						'post_date'     => $original_date,
-						'post_date_gmt' => get_gmt_from_date( $original_date ),
-						'post_author'   => get_current_user_id() ?: 1,
-					),
-					true
-				);
-
-				if ( is_wp_error( $new_id ) || ! $new_id ) {
-					continue;
-				}
-
-				if ( $sec_img > 0 ) {
-					set_post_thumbnail( $new_id, $sec_img );
-				}
-
-				if ( ! empty( $original_terms ) && taxonomy_exists( 'journal_type' ) ) {
-					wp_set_object_terms( $new_id, $original_terms, 'journal_type' );
-				}
-
-				$new_ids[] = (int) $new_id;
-				$created++;
-			}
-
-			if ( ! empty( $new_ids ) ) {
-				$archive_title = 'Lunara Journal Archive - ' . get_the_date( 'F j, Y', $post_id );
-				wp_update_post(
-					array(
-						'ID'         => $post_id,
-						'post_title' => $archive_title,
-					)
-				);
-
-				if ( taxonomy_exists( 'journal_type' ) ) {
-					$archive_term = term_exists( 'archive', 'journal_type' );
-					if ( ! $archive_term ) {
-						$archive_term = wp_insert_term( 'Archive', 'journal_type', array( 'slug' => 'archive' ) );
-					}
-
-					if ( ! is_wp_error( $archive_term ) ) {
-						$term_id = is_array( $archive_term ) ? (int) $archive_term['term_id'] : (int) $archive_term;
-						if ( $term_id > 0 ) {
-							wp_set_object_terms( $post_id, array( $term_id ), 'journal_type', false );
-						}
-					}
-				}
-
-				update_post_meta( $post_id, '_lunara_journal_is_archive', '1' );
-				$migrated++;
-			}
-		}
-
-		wp_reset_postdata();
-
-		return compact( 'scanned', 'migrated', 'created', 'skipped', 'preview' );
 	}
 }

@@ -16,6 +16,9 @@ class Lunara_Dispatch_Image_Handler {
 	const HERO_TARGET_WIDTH = 1800;
 	const HERO_MIN_WIDTH    = 1400;
 	const UPSCALE_QUALITY   = 92;
+	const MAX_IMAGE_BYTES  = 8388608;
+	const MAX_IMAGE_DIMENSION = 10000;
+	const MAX_IMAGE_PIXELS = 25000000;
 	const MIN_SECTION_IMAGE_MATCH_SCORE = 2;
 	const MIN_SECTION_IMAGE_MATCH_RATIO = 0.18;
 
@@ -30,8 +33,11 @@ class Lunara_Dispatch_Image_Handler {
 	 * @param string $image_credit Image credit/copyright text.
 	 * @return int
 	 */
-	public function sideload( $image_url, $parent_post_id = 0, $title = '', $source_url = '', $source_label = '', $image_credit = '' ) {
-		if ( empty( $image_url ) ) {
+	public function sideload( $image_url, $parent_post_id = 0, $title = '', $source_url = '', $source_label = '', $image_credit = '', $image_license = '', $image_rights_url = '' ) {
+		if ( empty( $image_url ) || ! $this->is_public_https_url( $image_url ) ) {
+			return 0;
+		}
+		if ( '' === trim( (string) $image_credit ) || '' === trim( (string) $image_license ) || ! $this->is_public_https_url( $image_rights_url ) ) {
 			return 0;
 		}
 
@@ -45,18 +51,140 @@ class Lunara_Dispatch_Image_Handler {
 			require_once ABSPATH . 'wp-admin/includes/image.php';
 		}
 
-		$attachment_id = media_sideload_image( $image_url, (int) $parent_post_id, $title, 'id' );
+		$existing = get_posts( array(
+			'post_type' => 'attachment',
+			'post_status' => 'inherit',
+			'fields' => 'ids',
+			'posts_per_page' => 1,
+			'no_found_rows' => true,
+			'meta_key' => '_lunara_dispatch_image_url',
+			'meta_value' => esc_url_raw( (string) $image_url ),
+		) );
+		if ( ! empty( $existing[0] ) ) {
+			$this->store_source_context( (int) $existing[0], $image_url, $source_url, $source_label, $image_credit, $image_license, $image_rights_url );
+			$this->maybe_update_attachment_alt( (int) $existing[0], $title );
+			return (int) $existing[0];
+		}
+
+		$attachment_id = $this->download_and_sideload( $image_url, (int) $parent_post_id, $title );
 
 		if ( is_wp_error( $attachment_id ) ) {
 			error_log( 'Lunara Dispatch: Image sideload failed: ' . $attachment_id->get_error_message() . ' | URL: ' . $image_url );
 			return 0;
 		}
 
-		$this->maybe_upscale_attachment( (int) $attachment_id );
-		$this->store_source_context( (int) $attachment_id, $image_url, $source_url, $source_label, $image_credit );
+		$this->record_attachment_quality( (int) $attachment_id );
+		$this->store_source_context( (int) $attachment_id, $image_url, $source_url, $source_label, $image_credit, $image_license, $image_rights_url );
 		$this->maybe_update_attachment_alt( (int) $attachment_id, $title );
 
 		return (int) $attachment_id;
+	}
+
+	private function download_and_sideload( $image_url, $parent_post_id, $title ) {
+		if ( ! function_exists( 'media_handle_sideload' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/media.php';
+		}
+		if ( ! function_exists( 'wp_tempnam' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+		}
+
+		$tmp = wp_tempnam( $image_url );
+		if ( ! $tmp ) {
+			return new WP_Error( 'lunara_dispatch_image_temp', 'Could not allocate a temporary image file.' );
+		}
+
+		$response = wp_safe_remote_get( $image_url, array(
+			'timeout' => 20,
+			'redirection' => 2,
+			'reject_unsafe_urls' => true,
+			'limit_response_size' => self::MAX_IMAGE_BYTES,
+			'stream' => true,
+			'filename' => $tmp,
+		) );
+		$status = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_response_code( $response );
+		$size = file_exists( $tmp ) ? (int) filesize( $tmp ) : 0;
+		if ( is_wp_error( $response ) || 200 !== $status || $size <= 0 || $size >= self::MAX_IMAGE_BYTES ) {
+			@unlink( $tmp );
+			return is_wp_error( $response ) ? $response : new WP_Error( 'lunara_dispatch_image_download', 'Remote image failed the HTTPS, status, or size gate.' );
+		}
+
+		$mime = function_exists( 'wp_get_image_mime' ) ? wp_get_image_mime( $tmp ) : '';
+		$extensions = array(
+			'image/jpeg' => 'jpg',
+			'image/png' => 'png',
+			'image/gif' => 'gif',
+			'image/webp' => 'webp',
+			'image/avif' => 'avif',
+		);
+		if ( empty( $extensions[ $mime ] ) ) {
+			@unlink( $tmp );
+			return new WP_Error( 'lunara_dispatch_image_type', 'Remote file is not a supported image.' );
+		}
+		$dimensions = function_exists( 'wp_getimagesize' ) ? wp_getimagesize( $tmp ) : @getimagesize( $tmp );
+		$width = ! empty( $dimensions[0] ) ? (int) $dimensions[0] : 0;
+		$height = ! empty( $dimensions[1] ) ? (int) $dimensions[1] : 0;
+		$pixels = $width > 0 && $height > 0 ? $width * $height : 0;
+		if (
+			$width <= 0 ||
+			$height <= 0 ||
+			$width > self::MAX_IMAGE_DIMENSION ||
+			$height > self::MAX_IMAGE_DIMENSION ||
+			$pixels > self::MAX_IMAGE_PIXELS
+		) {
+			@unlink( $tmp );
+			return new WP_Error( 'lunara_dispatch_image_dimensions', 'Remote image failed the dimension or decoded-pixel budget.' );
+		}
+
+		$path = (string) wp_parse_url( $image_url, PHP_URL_PATH );
+		$name = sanitize_file_name( wp_basename( $path ) );
+		if ( '' === $name || ! preg_match( '/\.(?:jpe?g|png|gif|webp|avif)$/i', $name ) ) {
+			$name = 'lunara-dispatch-' . substr( md5( $image_url ), 0, 12 ) . '.' . $extensions[ $mime ];
+		}
+
+		$file = array(
+			'name' => $name,
+			'tmp_name' => $tmp,
+			'error' => 0,
+			'size' => $size,
+		);
+		$result = media_handle_sideload( $file, (int) $parent_post_id, sanitize_text_field( (string) $title ) );
+		if ( is_wp_error( $result ) ) {
+			@unlink( $tmp );
+		}
+		return $result;
+	}
+
+	private function record_attachment_quality( $attachment_id ) {
+		$file = get_attached_file( (int) $attachment_id );
+		$size = $file && file_exists( $file ) ? wp_getimagesize( $file ) : false;
+		if ( empty( $size[0] ) || empty( $size[1] ) ) {
+			update_post_meta( (int) $attachment_id, '_lunara_dispatch_image_quality_state', 'unknown' );
+			return;
+		}
+		update_post_meta( (int) $attachment_id, '_lunara_dispatch_source_dimensions', array(
+			'width' => (int) $size[0],
+			'height' => (int) $size[1],
+		) );
+		update_post_meta(
+			(int) $attachment_id,
+			'_lunara_dispatch_image_quality_state',
+			(int) $size[0] >= self::HERO_MIN_WIDTH ? 'source_ok' : 'needs_better_source'
+		);
+	}
+
+	private function is_public_https_url( $url ) {
+		$url = esc_url_raw( (string) $url, array( 'https' ) );
+		if ( '' === $url || 'https' !== strtolower( (string) wp_parse_url( $url, PHP_URL_SCHEME ) ) ) {
+			return false;
+		}
+		$host = strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
+		if ( '' === $host || 'localhost' === $host || '.local' === substr( $host, -6 ) ) {
+			return false;
+		}
+		if ( filter_var( $host, FILTER_VALIDATE_IP ) ) {
+			return false !== filter_var( $host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE );
+		}
+		return (bool) wp_http_validate_url( $url );
 	}
 
 	/**
@@ -70,7 +198,7 @@ class Lunara_Dispatch_Image_Handler {
 
 		foreach ( $items as $idx => $item ) {
 			$out[ $idx ] = 0;
-			if ( ! empty( $item['image_blocked'] ) || empty( $item['image_url'] ) ) {
+			if ( ! $this->item_has_asset_reuse_rights( $item ) ) {
 				continue;
 			}
 
@@ -80,7 +208,9 @@ class Lunara_Dispatch_Image_Handler {
 				$item['title'] ?? '',
 				$item['url'] ?? '',
 				$item['source_label'] ?? '',
-				$item['image_credit'] ?? ''
+				$item['image_credit'] ?? '',
+				$item['image_license'] ?? '',
+				$item['image_rights_url'] ?? ''
 			);
 			if ( $attachment > 0 ) {
 				$out[ $idx ] = $attachment;
@@ -101,7 +231,7 @@ class Lunara_Dispatch_Image_Handler {
 	 * @param string $image_credit  Image credit/copyright text.
 	 * @return void
 	 */
-	private function store_source_context( $attachment_id, $image_url, $source_url = '', $source_label = '', $image_credit = '' ) {
+	private function store_source_context( $attachment_id, $image_url, $source_url = '', $source_label = '', $image_credit = '', $image_license = '', $image_rights_url = '' ) {
 		$attachment_id = (int) $attachment_id;
 		if ( $attachment_id <= 0 ) {
 			return;
@@ -123,6 +253,13 @@ class Lunara_Dispatch_Image_Handler {
 			update_post_meta( $attachment_id, '_lunara_dispatch_image_credit', sanitize_text_field( (string) $image_credit ) );
 			update_post_meta( $attachment_id, '_lunara_image_credit', sanitize_text_field( (string) $image_credit ) );
 		}
+		if ( '' !== (string) $image_license ) {
+			update_post_meta( $attachment_id, '_lunara_dispatch_image_license', sanitize_text_field( (string) $image_license ) );
+		}
+		if ( '' !== (string) $image_rights_url ) {
+			update_post_meta( $attachment_id, '_lunara_dispatch_image_rights_url', esc_url_raw( (string) $image_rights_url, array( 'https' ) ) );
+		}
+		update_post_meta( $attachment_id, '_lunara_dispatch_image_rights_verified', '1' );
 
 		$this->maybe_update_attachment_caption( $attachment_id, $source_label, $image_credit );
 	}
@@ -214,85 +351,8 @@ class Lunara_Dispatch_Image_Handler {
 		if ( $attachment_id <= 0 ) {
 			return false;
 		}
-
-		$file = get_attached_file( $attachment_id );
-		if ( empty( $file ) || ! file_exists( $file ) ) {
-			return false;
-		}
-
-		$size = wp_getimagesize( $file );
-		if ( empty( $size[0] ) || empty( $size[1] ) ) {
-			return false;
-		}
-
-		$width  = (int) $size[0];
-		$height = (int) $size[1];
-
-		update_post_meta(
-			$attachment_id,
-			'_lunara_dispatch_source_dimensions',
-			array(
-				'width'  => $width,
-				'height' => $height,
-			)
-		);
-
-		if ( $width >= self::HERO_MIN_WIDTH ) {
-			update_post_meta( $attachment_id, '_lunara_dispatch_image_quality_state', 'source_ok' );
-			return false;
-		}
-
-		if ( ! function_exists( 'wp_get_image_editor' ) ) {
-			require_once ABSPATH . 'wp-admin/includes/image.php';
-		}
-
-		$editor = wp_get_image_editor( $file );
-		if ( is_wp_error( $editor ) ) {
-			update_post_meta( $attachment_id, '_lunara_dispatch_image_quality_state', 'editor_unavailable' );
-			error_log( 'Lunara Dispatch: Upscale skipped for attachment ' . $attachment_id . ' because no image editor was available.' );
-			return false;
-		}
-
-		$scale      = self::HERO_TARGET_WIDTH / max( 1, $width );
-		$target_w   = max( self::HERO_TARGET_WIDTH, (int) round( $width * $scale ) );
-		$target_h   = max( 1, (int) round( $height * $scale ) );
-		$resized    = $editor->resize( $target_w, $target_h, false );
-
-		if ( is_wp_error( $resized ) ) {
-			return $this->maybe_manual_gd_upscale_attachment( $attachment_id, $file, $width, $height, $target_w, $target_h, 'resize_failed:' . $resized->get_error_message() );
-		}
-
-		if ( method_exists( $editor, 'set_quality' ) ) {
-			$editor->set_quality( self::UPSCALE_QUALITY );
-		}
-
-		$saved = $editor->save( $file );
-		if ( is_wp_error( $saved ) ) {
-			return $this->maybe_manual_gd_upscale_attachment( $attachment_id, $file, $width, $height, $target_w, $target_h, 'save_failed:' . $saved->get_error_message() );
-		}
-
-		clearstatcache( true, $file );
-
-		$metadata = wp_generate_attachment_metadata( $attachment_id, $file );
-		if ( ! is_wp_error( $metadata ) && ! empty( $metadata ) ) {
-			wp_update_attachment_metadata( $attachment_id, $metadata );
-		}
-
-		update_post_meta(
-			$attachment_id,
-			'_lunara_dispatch_image_quality_state',
-			'upscaled'
-		);
-		update_post_meta(
-			$attachment_id,
-			'_lunara_dispatch_upscaled_dimensions',
-			array(
-				'width'  => $target_w,
-				'height' => $target_h,
-			)
-		);
-
-		return true;
+		$this->record_attachment_quality( $attachment_id );
+		return false;
 	}
 
 	/**
@@ -423,6 +483,91 @@ class Lunara_Dispatch_Image_Handler {
 			default:
 				return false;
 		}
+	}
+
+	/**
+	 * Match and download only after Journal drafts have passed all text gates.
+	 * Source images remain manual Needs Visual work unless their source record
+	 * explicitly grants reuse.
+	 *
+	 * @param int[] $post_ids Accepted Journal draft IDs.
+	 * @param array $items    Bounded source items from this run.
+	 * @return array
+	 */
+	public function assign_images_to_posts( array $post_ids, array $items ) {
+		$result = array( 'matched' => 0, 'sideloaded' => 0 );
+		$candidates = array();
+		foreach ( $items as $idx => $item ) {
+			if ( ! is_array( $item ) || ! $this->item_has_asset_reuse_rights( $item ) ) {
+				continue;
+			}
+			$candidates[ $idx ] = $this->extract_keywords(
+				( $item['title'] ?? '' ) . ' ' . ( $item['description'] ?? '' ) . ' ' . ( $item['source_label'] ?? '' )
+			);
+		}
+
+		$used = array();
+		foreach ( $post_ids as $post_id ) {
+			$post = get_post( (int) $post_id );
+			if ( ! $post || 'journal' !== $post->post_type || 'draft' !== $post->post_status ) {
+				continue;
+			}
+			$words = $this->extract_keywords( $post->post_title . ' ' . $post->post_content );
+			$best_idx = -1;
+			$best_score = 0;
+			foreach ( $candidates as $idx => $candidate_words ) {
+				if ( isset( $used[ $idx ] ) ) {
+					continue;
+				}
+				$score = count( array_intersect( $words, $candidate_words ) );
+				if ( $score > $best_score ) {
+					$best_score = $score;
+					$best_idx = $idx;
+				}
+			}
+
+			$denominator = $best_idx >= 0 ? min( count( $words ), count( $candidates[ $best_idx ] ) ) : 0;
+			$ratio = $denominator > 0 ? $best_score / $denominator : 0;
+			if ( $best_idx < 0 || $best_score < self::MIN_SECTION_IMAGE_MATCH_SCORE || $ratio < self::MIN_SECTION_IMAGE_MATCH_RATIO ) {
+				continue;
+			}
+
+			$item = $items[ $best_idx ];
+			$attachment_id = $this->sideload(
+				$item['image_url'],
+				(int) $post_id,
+				$post->post_title,
+				$item['url'] ?? '',
+				$item['source_label'] ?? '',
+				$item['image_credit'] ?? '',
+				$item['image_license'] ?? '',
+				$item['image_rights_url'] ?? ''
+			);
+			if ( $attachment_id <= 0 ) {
+				continue;
+			}
+
+			$used[ $best_idx ] = true;
+			$result['matched']++;
+			$result['sideloaded']++;
+			set_post_thumbnail( (int) $post_id, (int) $attachment_id );
+			delete_post_meta( (int) $post_id, '_lunara_dispatch_visual_status' );
+			delete_post_meta( (int) $post_id, '_lunara_dispatch_visual_search_query' );
+			delete_post_meta( (int) $post_id, '_lunara_dispatch_visual_brief' );
+		}
+
+		return $result;
+	}
+
+	private function item_has_asset_reuse_rights( array $item ) {
+		return empty( $item['image_blocked'] )
+			&& ! empty( $item['image_reuse_allowed'] )
+			&& ! empty( $item['image_rights_verified'] )
+			&& ! empty( $item['image_url'] )
+			&& ! empty( $item['image_credit'] )
+			&& ! empty( $item['image_license'] )
+			&& ! empty( $item['image_rights_url'] )
+			&& $this->is_public_https_url( $item['image_rights_url'] );
 	}
 
 	/**

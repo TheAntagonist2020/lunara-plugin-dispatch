@@ -23,6 +23,10 @@ if (!defined('ABSPATH')) {
 class Lunara_Dispatch_Feed_Fetcher {
 
     const SEEN_OPTION = 'lunara_dispatch_seen_sources';
+    const MAX_ITEMS_PER_RUN = 18;
+    const MAX_DESCRIPTION_CHARS = 1800;
+    const MAX_FEED_BYTES = 2097152;
+    const MAX_ARTICLE_BYTES = 1048576;
 
     /**
      * Aggregate enabled sources into a single deduped list of fresh items.
@@ -35,6 +39,10 @@ class Lunara_Dispatch_Feed_Fetcher {
      */
     public function fetch_all() {
         $sources = Lunara_Dispatch_Sources::enabled();
+        usort($sources, static function ($a, $b) {
+            $priority = ((int) ($b['priority'] ?? 5)) <=> ((int) ($a['priority'] ?? 5));
+            return 0 !== $priority ? $priority : strcasecmp((string) ($a['label'] ?? ''), (string) ($b['label'] ?? ''));
+        });
         $seen    = $this->load_seen_sources();
 
         $items   = array();
@@ -43,7 +51,14 @@ class Lunara_Dispatch_Feed_Fetcher {
         $seen_in_this_run = array();
 
         foreach ($sources as $source) {
-            $feed = fetch_feed($source['url']);
+            if (count($items) >= self::MAX_ITEMS_PER_RUN) {
+                break;
+            }
+            if (!$this->is_public_https_url($source['url'] ?? '')) {
+                $errors[$source['label']] = 'Feed URL must be a public HTTPS endpoint.';
+                continue;
+            }
+            $feed = $this->fetch_bounded_feed($source['url']);
             if (is_wp_error($feed)) {
                 $errors[$source['label']] = $feed->get_error_message();
                 continue;
@@ -55,8 +70,11 @@ class Lunara_Dispatch_Feed_Fetcher {
             }
 
             foreach ($rss_items as $rss_item) {
+                if (count($items) >= self::MAX_ITEMS_PER_RUN) {
+                    break;
+                }
                 $url = esc_url_raw($rss_item->get_permalink());
-                if (empty($url)) {
+                if (empty($url) || !$this->is_public_https_url($url)) {
                     continue;
                 }
                 $fp = $this->fingerprint($url);
@@ -67,16 +85,33 @@ class Lunara_Dispatch_Feed_Fetcher {
                 $seen_in_this_run[$fp] = true;
 
                 $image_blocked = $this->is_image_blocked_source( $source, $url );
+                $source_allows_images = !$image_blocked && !empty($source['image_reuse_allowed']);
+                $image_origin = '';
+                $image_url = $source_allows_images ? $this->extract_image_url($rss_item, $url, $image_origin) : '';
+                $image_credit = $source_allows_images ? $this->extract_image_credit($rss_item) : '';
+                $image_rights = $source_allows_images ? $this->extract_image_rights($rss_item) : array();
+                $image_reuse_allowed = $source_allows_images && $this->has_asset_reuse_rights(
+                    $image_url,
+                    $image_origin,
+                    $image_credit,
+                    $image_rights
+                );
 
                 $items[] = array(
-                    'title'        => wp_strip_all_tags((string) $rss_item->get_title()),
+                    'title'        => $this->truncate_text(wp_strip_all_tags((string) $rss_item->get_title()), 250),
                     'url'          => $url,
-                    'description'  => wp_strip_all_tags((string) $rss_item->get_description()),
-                    'image_url'    => $image_blocked ? '' : $this->extract_image_url($rss_item, $url),
-                    'image_credit' => $image_blocked ? '' : $this->extract_image_credit($rss_item),
+                    'description'  => $this->truncate_text(wp_strip_all_tags((string) $rss_item->get_description()), self::MAX_DESCRIPTION_CHARS),
+                    'image_url'    => $image_url,
+                    'image_credit' => $image_credit,
+                    'image_origin' => $image_origin,
+                    'image_license' => $image_rights['license'] ?? '',
+                    'image_rights_url' => $image_rights['url'] ?? '',
+                    'image_rights_verified' => $image_reuse_allowed,
                     'source_label' => $source['label'],
                     'source_policy' => $this->source_policy_note( $source, $url ),
                     'image_blocked' => $image_blocked,
+                    'image_reuse_allowed' => $image_reuse_allowed,
+                    'priority'     => isset($source['priority']) ? (int) $source['priority'] : 5,
                     'fingerprint'  => $fp,
                 );
             }
@@ -87,6 +122,26 @@ class Lunara_Dispatch_Feed_Fetcher {
             'skipped_duplicates' => $skipped,
             'errors'             => $errors,
         );
+    }
+
+    private function fetch_bounded_feed($url) {
+        $target = esc_url_raw((string) $url, array('https'));
+        $args_filter = static function ($args, $request_url) use ($target) {
+            if (esc_url_raw((string) $request_url, array('https')) !== $target) {
+                return $args;
+            }
+            $args['timeout'] = 15;
+            $args['redirection'] = 2;
+            $args['reject_unsafe_urls'] = true;
+            $args['limit_response_size'] = Lunara_Dispatch_Feed_Fetcher::MAX_FEED_BYTES;
+            return $args;
+        };
+        add_filter('http_request_args', $args_filter, 10, 2);
+        try {
+            return fetch_feed($target);
+        } finally {
+            remove_filter('http_request_args', $args_filter, 10);
+        }
     }
 
     public function mark_seen(array $items) {
@@ -174,12 +229,14 @@ class Lunara_Dispatch_Feed_Fetcher {
      * Layered image extraction: RSS-native first, then scrape og:image,
      * then scrape first <img> from the article HTML.
      */
-    private function extract_image_url($item, $article_url) {
+    private function extract_image_url($item, $article_url, &$origin = '') {
+        $origin = '';
         // 1. <enclosure>
         $enclosures = $item->get_enclosures();
         if (!empty($enclosures[0])) {
             $u = $enclosures[0]->get_link();
             if (!empty($u)) {
+                $origin = 'rss_enclosure';
                 return $this->normalize_image_url($u);
             }
         }
@@ -203,6 +260,7 @@ class Lunara_Dispatch_Feed_Fetcher {
                 }
             }
             if (!empty($best_media_url)) {
+                $origin = 'media_content';
                 return $this->normalize_image_url($best_media_url);
             }
         }
@@ -210,12 +268,14 @@ class Lunara_Dispatch_Feed_Fetcher {
         // 3. Scrape the article page for richer candidates.
         $scraped = $this->scrape_article_image($article_url);
         if (!empty($scraped)) {
+            $origin = 'article_scrape';
             return $scraped;
         }
 
         // 4. <media:thumbnail>
         $thumb = $item->get_item_tags('http://search.yahoo.com/mrss/', 'thumbnail');
         if (!empty($thumb[0]['attribs']['']['url'])) {
+            $origin = 'media_thumbnail';
             return $this->normalize_image_url($thumb[0]['attribs']['']['url']);
         }
 
@@ -225,6 +285,7 @@ class Lunara_Dispatch_Feed_Fetcher {
             $html = (string) $item->get_description();
         }
         if (!empty($html) && preg_match('/<img[^>]+src=["\']([^"\']+)["\']/i', $html, $m)) {
+            $origin = 'rss_body';
             return $this->normalize_image_url($m[1]);
         }
 
@@ -241,8 +302,7 @@ class Lunara_Dispatch_Feed_Fetcher {
         $credit_tags = array(
             array('http://search.yahoo.com/mrss/', 'credit'),
             array('http://search.yahoo.com/mrss/', 'copyright'),
-            array('http://search.yahoo.com/mrss/', 'title'),
-            array('http://search.yahoo.com/mrss/', 'text'),
+            array('http://purl.org/dc/elements/1.1/', 'creator'),
         );
 
         foreach ($credit_tags as $tag_spec) {
@@ -264,6 +324,53 @@ class Lunara_Dispatch_Feed_Fetcher {
         return '';
     }
 
+    private function extract_image_rights($item) {
+        $license = '';
+        $url = '';
+        $tag_sets = array(
+            array('http://search.yahoo.com/mrss/', 'license'),
+            array('http://purl.org/dc/elements/1.1/', 'rights'),
+            array('http://creativecommons.org/ns#', 'license'),
+        );
+        foreach ($tag_sets as $tag_spec) {
+            $tags = $item->get_item_tags($tag_spec[0], $tag_spec[1]);
+            foreach (is_array($tags) ? $tags : array() as $tag) {
+                if ('' === $license && !empty($tag['data'])) {
+                    $license = $this->normalize_credit_text($tag['data']);
+                }
+                $attributes = isset($tag['attribs']['']) && is_array($tag['attribs']['']) ? $tag['attribs'][''] : array();
+                foreach (array('href', 'url', 'resource') as $attribute) {
+                    if (empty($attributes[$attribute])) {
+                        continue;
+                    }
+                    $candidate = esc_url_raw((string) $attributes[$attribute], array('https'));
+                    if ($this->is_public_https_url($candidate)) {
+                        $url = $candidate;
+                        break 2;
+                    }
+                }
+                if ('' === $url && !empty($tag['data']) && filter_var(trim((string) $tag['data']), FILTER_VALIDATE_URL)) {
+                    $candidate = esc_url_raw(trim((string) $tag['data']), array('https'));
+                    if ($this->is_public_https_url($candidate)) {
+                        $url = $candidate;
+                    }
+                }
+            }
+        }
+        return array('license' => $license, 'url' => $url);
+    }
+
+    private function has_asset_reuse_rights($image_url, $origin, $credit, array $rights) {
+        if (empty($image_url) || !in_array($origin, array('rss_enclosure', 'media_content', 'media_thumbnail'), true)) {
+            return false;
+        }
+        if ('' === trim((string) $credit) || '' === trim((string) ($rights['license'] ?? ''))) {
+            return false;
+        }
+        $rights_url = (string) ($rights['url'] ?? '');
+        return $this->is_public_https_url($rights_url);
+    }
+
     /**
      * Normalize feed-supplied credit text before it is stored on attachments.
      *
@@ -283,7 +390,7 @@ class Lunara_Dispatch_Feed_Fetcher {
      * for 6 hours so we don't repeatedly hammer outlets on every cron run).
      */
     private function scrape_article_image($url) {
-        if (empty($url)) {
+        if (empty($url) || !$this->is_public_https_url($url)) {
             return '';
         }
         $cache_key = 'lunara_og_' . md5($url);
@@ -292,9 +399,11 @@ class Lunara_Dispatch_Feed_Fetcher {
             return $cached === '__none__' ? '' : $cached;
         }
 
-        $response = wp_remote_get($url, array(
+        $response = wp_safe_remote_get($url, array(
             'timeout'    => 12,
-            'redirection' => 3,
+            'redirection' => 2,
+            'reject_unsafe_urls' => true,
+            'limit_response_size' => self::MAX_ARTICLE_BYTES,
             'user-agent' => 'Mozilla/5.0 (compatible; LunaraDispatch/3.0; +https://lunarafilm.com)',
         ));
 
@@ -304,7 +413,7 @@ class Lunara_Dispatch_Feed_Fetcher {
         }
 
         $html = wp_remote_retrieve_body($response);
-        if (empty($html)) {
+        if (empty($html) || strlen($html) >= self::MAX_ARTICLE_BYTES) {
             set_transient($cache_key, '__none__', 6 * HOUR_IN_SECONDS);
             return '';
         }
@@ -454,5 +563,30 @@ class Lunara_Dispatch_Feed_Fetcher {
         }
 
         return '';
+    }
+
+    private function truncate_text($text, $max_chars) {
+        $text = trim(preg_replace('/\s+/u', ' ', (string) $text));
+        $max_chars = max(1, (int) $max_chars);
+        if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+            return mb_strlen($text) > $max_chars ? rtrim(mb_substr($text, 0, $max_chars - 3)) . '...' : $text;
+        }
+        return strlen($text) > $max_chars ? rtrim(substr($text, 0, $max_chars - 3)) . '...' : $text;
+    }
+
+    private function is_public_https_url($url) {
+        $url = esc_url_raw((string) $url, array('https'));
+        if ('' === $url || 'https' !== strtolower((string) wp_parse_url($url, PHP_URL_SCHEME))) {
+            return false;
+        }
+
+        $host = strtolower((string) wp_parse_url($url, PHP_URL_HOST));
+        if ('' === $host || 'localhost' === $host || '.local' === substr($host, -6)) {
+            return false;
+        }
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            return false !== filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
+        }
+        return (bool) wp_http_validate_url($url);
     }
 }
