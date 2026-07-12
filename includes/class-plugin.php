@@ -13,8 +13,12 @@ if (!defined('ABSPATH')) {
 class Lunara_Dispatch_Plugin {
 
     const CRON_HOOK = 'lunara_dispatch_scheduled';
+    const MANUAL_CRON_HOOK = 'lunara_dispatch_manual_requested';
     const LOCK_KEY  = 'lunara_dispatch_running';
     const REPORT_OPTION = 'lunara_dispatch_last_run_report';
+    const HISTORY_OPTION = 'lunara_dispatch_run_history';
+    const HISTORY_LIMIT = 20;
+    const LOCK_TTL = 20 * MINUTE_IN_SECONDS;
     const SKIP_MARKER = 'LUNARA_SKIP';
 
     /** @var Lunara_Dispatch_Plugin */
@@ -26,6 +30,8 @@ class Lunara_Dispatch_Plugin {
     /** @var Lunara_Dispatch_Post_Builder  */ public $post_builder;
     /** @var Lunara_Dispatch_Admin         */ public $admin;
 
+    /** @var string */ private $current_run_id = '';
+
     public static function instance() {
         if (null === self::$instance) {
             self::$instance = new self();
@@ -34,27 +40,41 @@ class Lunara_Dispatch_Plugin {
     }
 
     private function __construct() {
-        $this->feed_fetcher  = new Lunara_Dispatch_Feed_Fetcher();
-        $this->ai_client     = new Lunara_Dispatch_AI_Client();
-        $this->image_handler = new Lunara_Dispatch_Image_Handler();
-        $this->post_builder  = new Lunara_Dispatch_Post_Builder();
-        $this->admin         = new Lunara_Dispatch_Admin($this);
+        if (is_admin() && class_exists('Lunara_Dispatch_Admin')) {
+            $this->admin = new Lunara_Dispatch_Admin($this);
+        }
 
         add_filter('cron_schedules', array($this, 'add_cron_schedules'));
         add_action(self::CRON_HOOK, array($this, 'run_scheduled'));
+        add_action(self::MANUAL_CRON_HOOK, array($this, 'run_manual_scheduled'));
         add_action('update_option_lunara_dispatch_schedule', array($this, 'reschedule_on_frequency_change'), 10, 2);
+        add_action('lunara_journal_control_plane_activated', array($this, 'reschedule_from_control_plane'), 10, 2);
+    }
+
+    public function ensure_services() {
+        if (!$this->feed_fetcher) {
+            require_once LUNARA_DISPATCH_DIR . 'includes/class-feed-fetcher.php';
+            require_once LUNARA_DISPATCH_DIR . 'includes/class-ai-client.php';
+            require_once LUNARA_DISPATCH_DIR . 'includes/class-image-handler.php';
+            require_once LUNARA_DISPATCH_DIR . 'includes/class-post-builder.php';
+            $this->feed_fetcher  = new Lunara_Dispatch_Feed_Fetcher();
+            $this->ai_client     = new Lunara_Dispatch_AI_Client();
+            $this->image_handler = new Lunara_Dispatch_Image_Handler();
+            $this->post_builder  = new Lunara_Dispatch_Post_Builder();
+        }
     }
 
     public static function on_activate() {
         Lunara_Dispatch_Sources::install_defaults_if_empty();
         if (!wp_next_scheduled(self::CRON_HOOK)) {
-            $recurrence = self::recurrence_from_setting(get_option('lunara_dispatch_schedule', 'daily'));
+            $recurrence = self::recurrence_from_setting(class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::schedule() : get_option('lunara_dispatch_schedule', 'daily'));
             wp_schedule_event(strtotime('+1 hour'), $recurrence, self::CRON_HOOK);
         }
     }
 
     public static function on_deactivate() {
         wp_clear_scheduled_hook(self::CRON_HOOK);
+        wp_clear_scheduled_hook(self::MANUAL_CRON_HOOK);
     }
 
     public function add_cron_schedules($schedules) {
@@ -82,21 +102,205 @@ class Lunara_Dispatch_Plugin {
         if ($old_value === $new_value) {
             return;
         }
+        $this->reschedule_cron($new_value);
+    }
+
+    /**
+     * Keep WP-Cron aligned with the authoritative versioned Journal config.
+     *
+     * @param int|string $config_id Activated config identifier.
+     * @param array      $config    Activated config payload.
+     * @return void
+     */
+    public function reschedule_from_control_plane($config_id = 0, $config = array()) {
+        unset($config_id);
+        $schedule = is_array($config) && !empty($config['dispatch']['schedule'])
+            ? sanitize_key((string) $config['dispatch']['schedule'])
+            : (is_array($config) && !empty($config['schedule'])
+                ? sanitize_key((string) $config['schedule'])
+                : Lunara_Dispatch_Control_Plane_Client::schedule());
+        $this->reschedule_cron($schedule);
+    }
+
+    private function reschedule_cron($schedule) {
+        $recurrence = self::recurrence_from_setting($schedule);
+        $event = function_exists('wp_get_scheduled_event') ? wp_get_scheduled_event(self::CRON_HOOK) : false;
+        if ($event && isset($event->schedule) && $recurrence === $event->schedule) {
+            return;
+        }
         wp_clear_scheduled_hook(self::CRON_HOOK);
-        wp_schedule_event(strtotime('+1 hour'), self::recurrence_from_setting($new_value), self::CRON_HOOK);
+        wp_schedule_event(time() + HOUR_IN_SECONDS, $recurrence, self::CRON_HOOK);
     }
 
     public function run_scheduled() {
         $this->run(false);
     }
 
-    public function get_target_post_status() {
-        $post_status = sanitize_key((string) get_option('lunara_dispatch_post_status', 'draft'));
-        $allowed = array('draft', 'pending', 'publish', 'private');
-        if (!in_array($post_status, $allowed, true)) {
-            return 'draft';
+    public function run_manual_scheduled() {
+        delete_option('lunara_dispatch_manual_run_queued_at');
+        $this->run(true);
+    }
+
+    /**
+     * Queue a manual Dispatch run and return immediately.
+     *
+     * @return array|WP_Error
+     */
+    public function queue_manual_run() {
+        if (!$this->foundation_is_available()) {
+            return new WP_Error('lunara_dispatch_foundation_required', $this->foundation_error_message());
         }
-        return $post_status;
+        if ($this->lock_is_active()) {
+            return array(
+                'success' => true,
+                'queued'  => false,
+                'running' => true,
+                'message' => 'A Dispatch run is already in progress.',
+            );
+        }
+
+        $existing = wp_next_scheduled(self::MANUAL_CRON_HOOK);
+        if ($existing) {
+            return array(
+                'success'       => true,
+                'queued'        => true,
+                'running'       => false,
+                'scheduled_gmt' => gmdate('c', $existing),
+                'message'       => 'A manual Dispatch run is already queued.',
+            );
+        }
+
+        $scheduled_for = time() + 1;
+        $scheduled = wp_schedule_single_event($scheduled_for, self::MANUAL_CRON_HOOK);
+        if (is_wp_error($scheduled)) {
+            return $scheduled;
+        }
+        if (false === $scheduled) {
+            return new WP_Error('lunara_dispatch_queue_failed', 'WordPress could not queue the manual Dispatch run.');
+        }
+
+        update_option('lunara_dispatch_manual_run_queued_at', current_time('mysql', true), false);
+        if (function_exists('spawn_cron')) {
+            spawn_cron(time());
+        }
+
+        return array(
+            'success'       => true,
+            'queued'        => true,
+            'running'       => false,
+            'scheduled_gmt' => gmdate('c', $scheduled_for),
+            'message'       => 'Manual Dispatch run queued in WordPress.',
+        );
+    }
+
+    /**
+     * Claim the worker with an atomic option insert or expired-value CAS.
+     *
+     * @return string|WP_Error Owner token on success.
+     */
+    private function acquire_lock() {
+        global $wpdb;
+
+        $owner = wp_generate_uuid4();
+        $payload = $this->lock_payload($owner);
+        if (add_option(self::LOCK_KEY, $payload, '', false)) {
+            return $owner;
+        }
+
+        $raw = $this->read_raw_lock();
+        $state = $this->decode_lock($raw);
+        if (!empty($state['expires']) && (int) $state['expires'] >= time()) {
+            return new WP_Error('lunara_dispatch_locked', 'Another Dispatch run owns the worker lock.');
+        }
+
+        $updated = $wpdb->query($wpdb->prepare(
+            "UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
+            $payload,
+            self::LOCK_KEY,
+            $raw
+        ));
+        if (1 === (int) $updated) {
+            wp_cache_delete(self::LOCK_KEY, 'options');
+            return $owner;
+        }
+
+        return new WP_Error('lunara_dispatch_locked', 'Another Dispatch run acquired the worker lock.');
+    }
+
+    private function heartbeat_lock($owner) {
+        global $wpdb;
+
+        $raw = $this->read_raw_lock();
+        $state = $this->decode_lock($raw);
+        if (empty($state['owner']) || !hash_equals((string) $state['owner'], (string) $owner)) {
+            return false;
+        }
+
+        $updated = $wpdb->query($wpdb->prepare(
+            "UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
+            $this->lock_payload($owner),
+            self::LOCK_KEY,
+            $raw
+        ));
+        if (1 === (int) $updated) {
+            wp_cache_delete(self::LOCK_KEY, 'options');
+            return true;
+        }
+        return false;
+    }
+
+    private function release_lock($owner) {
+        global $wpdb;
+
+        $raw = $this->read_raw_lock();
+        $state = $this->decode_lock($raw);
+        if (empty($state['owner']) || !hash_equals((string) $state['owner'], (string) $owner)) {
+            return false;
+        }
+
+        $deleted = $wpdb->query($wpdb->prepare(
+            "DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
+            self::LOCK_KEY,
+            $raw
+        ));
+        if (1 === (int) $deleted) {
+            wp_cache_delete(self::LOCK_KEY, 'options');
+            return true;
+        }
+        return false;
+    }
+
+    private function lock_is_active() {
+        $state = $this->decode_lock($this->read_raw_lock());
+        return !empty($state['owner']) && !empty($state['expires']) && (int) $state['expires'] >= time();
+    }
+
+    private function lock_payload($owner) {
+        return wp_json_encode(array(
+            'owner'     => (string) $owner,
+            'heartbeat' => time(),
+            'expires'   => time() + self::LOCK_TTL,
+        ));
+    }
+
+    private function read_raw_lock() {
+        global $wpdb;
+        $raw = $wpdb->get_var($wpdb->prepare(
+            "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1",
+            self::LOCK_KEY
+        ));
+        return is_string($raw) ? $raw : '';
+    }
+
+    private function decode_lock($raw) {
+        $state = json_decode((string) $raw, true);
+        return is_array($state) ? $state : array();
+    }
+
+    public function get_target_post_status() {
+        // Control Plane guarantee: Dispatch may only create drafts. Legacy values
+        // such as publish, pending, or private are intentionally ignored.
+        return class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::post_status() : 'draft';
     }
 
     public function get_status_label($post_status) {
@@ -118,6 +322,11 @@ class Lunara_Dispatch_Plugin {
         return is_array($report) ? $report : array();
     }
 
+    public function get_run_history() {
+        $history = get_option(self::HISTORY_OPTION, array());
+        return is_array($history) ? $history : array();
+    }
+
     /**
      * Aggregate, generate, split, and save. Returns a structured result.
      *
@@ -125,21 +334,36 @@ class Lunara_Dispatch_Plugin {
      * @return array
      */
     public function run($force = false) {
-        $enabled = (int) get_option('lunara_dispatch_enabled', 0);
+        $this->ensure_services();
+        $this->current_run_id = wp_generate_uuid4();
+        if (!$this->foundation_is_available()) {
+            return $this->result(false, $this->foundation_error_message(), array(
+                'retry_required' => true,
+                'protocol_error' => true,
+            ));
+        }
+        $enabled = class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::enabled() : (int) get_option('lunara_dispatch_enabled', 0);
         if (!$force && !$enabled) {
             return $this->result(false, 'Automation is disabled. Enable it in settings or use Run Now.');
         }
 
-        if (get_transient(self::LOCK_KEY)) {
+        $lock_owner = $this->acquire_lock();
+        if (is_wp_error($lock_owner)) {
             return $this->result(false, 'Another dispatch run is already in progress. Try again in a minute.');
         }
-        set_transient(self::LOCK_KEY, 1, 5 * MINUTE_IN_SECONDS);
 
         try {
             $fetched = $this->feed_fetcher->fetch_all();
             $items   = $fetched['items'];
             $skipped = $fetched['skipped_duplicates'];
             $errors  = $fetched['errors'];
+            if (!$this->heartbeat_lock($lock_owner)) {
+                return $this->result(false, 'Dispatch lost worker-lock ownership after feed collection and stopped before generation.', array(
+                    'retry_required' => true,
+                    'feed_errors' => $errors,
+                    'skipped_duplicates' => $skipped,
+                ));
+            }
 
             if (empty($items)) {
                 return $this->result(true, 'No new items to import across all enabled sources.', array(
@@ -159,19 +383,28 @@ class Lunara_Dispatch_Plugin {
                 $image_policy  = ! empty( $i['image_blocked'] ) ? "\nIMAGE_POLICY: Do not reuse or sideload this source image; leave featured-image selection to a separate safe asset." : '';
                 $image_status  = ! empty( $i['image_blocked'] )
                     ? 'blocked source image'
-                    : ( ! empty( $i['image_url'] ) ? 'reusable image available' : 'no reusable image found' );
-                $lines[] = "SOURCE: " . $i['source_label']
+                    : ( ! empty( $i['image_url'] )
+                        ? ( ! empty( $i['image_reuse_allowed'] ) ? 'approved reusable image available' : 'image requires rights review' )
+                        : 'no reusable image found' );
+                $lines[] = "[BEGIN_UNTRUSTED_SOURCE_ITEM]\nSOURCE: " . $i['source_label']
                     . "\nTITLE: " . $i['title']
                     . "\nLINK: "  . $i['url']
                     . "\nIMAGE_STATUS: " . $image_status
                     . $source_policy
                     . $image_policy
-                    . "\n\n"      . $i['description']
-                    . "\n\n---\n";
+                    . "\nDESCRIPTION:\n" . $i['description']
+                    . "\n[END_UNTRUSTED_SOURCE_ITEM]\n";
             }
             $news_data = implode("\n", $lines);
 
             $generated = $this->ai_client->generate($news_data);
+            if (!$this->heartbeat_lock($lock_owner)) {
+                return $this->result(false, 'Dispatch lost worker-lock ownership after generation and stopped before creating drafts.', array(
+                    'retry_required' => true,
+                    'feed_errors' => $errors,
+                    'skipped_duplicates' => $skipped,
+                ));
+            }
             if (is_wp_error($generated)) {
                 $msg = $generated->get_error_message();
                 error_log('Lunara Dispatch: ' . $msg);
@@ -207,23 +440,26 @@ class Lunara_Dispatch_Plugin {
             $post_type   = $this->post_builder->get_target_post_type();
             $post_status = $this->get_target_post_status();
 
-            $item_image_ids = $this->image_handler->sideload_for_items($items);
             $source_items_with_image = $source_image_status['source_items_with_image'];
-            $item_images_sideloaded = count(array_filter($item_image_ids, static function ($attachment_id) {
-                return (int) $attachment_id > 0;
-            }));
-            $section_image_map = $this->image_handler->match_sections_to_items(
-                $generated, $items, $item_image_ids
-            );
-            $section_images_matched = count(array_filter($section_image_map, static function ($attachment_id) {
-                return (int) $attachment_id > 0;
-            }));
+            $item_images_sideloaded = 0;
+            $section_images_matched = 0;
 
 			$created_post_ids = $this->post_builder->split_into_individual_posts(
-				$generated, $section_image_map, $post_type, $post_status
+				$generated,
+				array(),
+				$post_type,
+				$post_status,
+				array(
+					'provider' => class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::provider() : sanitize_key(get_option('lunara_dispatch_provider', 'openai')),
+					'model'    => class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::model_for_provider(class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::provider() : 'openai', '' ) : '',
+					'config_version' => class_exists('Lunara_Dispatch_Control_Plane_Client') ? sanitize_text_field((string) (Lunara_Dispatch_Control_Plane_Client::runtime_config()['config_version'] ?? '')) : '',
+					'prompt_version' => class_exists('Lunara_Dispatch_Control_Plane_Client') ? 'journal-' . sanitize_text_field((string) (Lunara_Dispatch_Control_Plane_Client::runtime_config()['config_version'] ?? '')) : '',
+					'items'    => $items,
+					'run_id'   => $this->current_run_id,
+				)
 			);
-			$created_with_featured_image = $this->count_posts_with_featured_images($created_post_ids);
-			$created_without_featured_image = max(0, count($created_post_ids) - $created_with_featured_image);
+			$created_with_featured_image = 0;
+			$created_without_featured_image = count($created_post_ids);
 			$topic_duplicate_skips = method_exists($this->post_builder, 'get_last_topic_duplicate_skips')
 				? $this->post_builder->get_last_topic_duplicate_skips()
 				: array();
@@ -232,8 +468,22 @@ class Lunara_Dispatch_Plugin {
 				? $this->post_builder->get_last_quality_gate_skips()
 				: array();
 			$quality_gate_count = count($quality_gate_skips);
+			$insertion_failures = method_exists($this->post_builder, 'get_last_insertion_failures')
+				? $this->post_builder->get_last_insertion_failures()
+				: array();
 
 			if (empty($created_post_ids)) {
+				if (!empty($insertion_failures)) {
+					return $this->result(false, 'One or more Journal drafts could not be created; source items remain eligible for retry.', array(
+						'feed_errors' => $errors,
+						'skipped_duplicates' => $skipped,
+						'insertion_failures' => $insertion_failures,
+						'retry_required' => true,
+						'created' => 0,
+						'imported' => count($items),
+						'post_status' => $post_status,
+					));
+				}
 				if ($topic_duplicate_count > 0) {
 					$this->feed_fetcher->mark_seen($items);
 
@@ -310,7 +560,34 @@ class Lunara_Dispatch_Plugin {
 				));
 			}
 
-            $this->feed_fetcher->mark_seen($items);
+            if (!$this->heartbeat_lock($lock_owner)) {
+                return $this->result(false, 'Dispatch lost worker-lock ownership after draft ingest and stopped before image work.', array(
+                    'retry_required' => true,
+                    'post_ids' => $created_post_ids,
+                    'created' => count($created_post_ids),
+                    'imported' => count($items),
+                    'feed_errors' => $errors,
+                ));
+            }
+
+            $image_result = $this->image_handler->assign_images_to_posts($created_post_ids, $items);
+            if (!$this->heartbeat_lock($lock_owner)) {
+                return $this->result(false, 'Dispatch lost worker-lock ownership during image work and stopped before marking sources seen.', array(
+                    'retry_required' => true,
+                    'post_ids' => $created_post_ids,
+                    'created' => count($created_post_ids),
+                    'imported' => count($items),
+                    'feed_errors' => $errors,
+                ));
+            }
+            $item_images_sideloaded = isset($image_result['sideloaded']) ? (int) $image_result['sideloaded'] : 0;
+            $section_images_matched = isset($image_result['matched']) ? (int) $image_result['matched'] : 0;
+			$created_with_featured_image = $this->count_posts_with_featured_images($created_post_ids);
+			$created_without_featured_image = max(0, count($created_post_ids) - $created_with_featured_image);
+
+            if (empty($insertion_failures)) {
+                $this->feed_fetcher->mark_seen($items);
+            }
 
             return $this->result(true, sprintf(
                 'Created %d %s post(s) from %d source items across %d feed(s). Featured images attached to %d/%d draft(s).',
@@ -335,12 +612,14 @@ class Lunara_Dispatch_Plugin {
 				'topic_duplicate_skips' => $topic_duplicate_skips,
 				'skipped_quality_gate' => $quality_gate_count,
 				'quality_gate_skips' => $quality_gate_skips,
+				'insertion_failures' => $insertion_failures,
+				'retry_required'     => !empty($insertion_failures),
 				'feed_errors'        => $errors,
 				'post_status'        => $post_status,
 				'post_status_label'  => $this->get_status_label($post_status),
 			));
         } finally {
-            delete_transient(self::LOCK_KEY);
+            $this->release_lock($lock_owner);
         }
     }
 
@@ -351,15 +630,28 @@ class Lunara_Dispatch_Plugin {
     private function summarize_source_image_status(array $items) {
         return array(
             'source_items_with_image' => count(array_filter($items, static function ($item) {
-                return empty($item['image_blocked']) && !empty($item['image_url']);
+                return empty($item['image_blocked']) && !empty($item['image_url']) && !empty($item['image_rights_verified']);
             })),
             'image_blocked_sources' => count(array_filter($items, static function ($item) {
                 return !empty($item['image_blocked']);
             })),
             'source_items_without_image' => count(array_filter($items, static function ($item) {
-                return empty($item['image_blocked']) && empty($item['image_url']);
+                return empty($item['image_blocked']) && (empty($item['image_url']) || empty($item['image_rights_verified']));
             })),
         );
+    }
+
+    private function foundation_is_available() {
+        return class_exists('Lunara_Journal_Control_Plane')
+            && class_exists('Lunara_Dispatch_Control_Plane_Client')
+            && Lunara_Dispatch_Control_Plane_Client::available();
+    }
+
+    private function foundation_error_message() {
+        $runtime = class_exists('Lunara_Dispatch_Control_Plane_Client')
+            ? Lunara_Dispatch_Control_Plane_Client::runtime_config()
+            : array();
+        return (string) ($runtime['protocol_error'] ?? 'Journal Foundation is required and its Dispatch protocol must be available.');
     }
 
     private function count_posts_with_featured_images(array $post_ids) {
@@ -376,9 +668,11 @@ class Lunara_Dispatch_Plugin {
         $payload = array_merge(array(
             'success' => (bool) $success,
             'message' => (string) $message,
+            'run_id'  => $this->current_run_id,
         ), $extra);
 
-        update_option(self::REPORT_OPTION, array(
+        $report = array(
+            'run_id'             => sanitize_text_field((string) $payload['run_id']),
             'timestamp_gmt'      => current_time('mysql', true),
             'success'            => (bool) $payload['success'],
             'message'            => (string) $payload['message'],
@@ -397,7 +691,17 @@ class Lunara_Dispatch_Plugin {
 			'topic_duplicate_skips' => isset($payload['topic_duplicate_skips']) && is_array($payload['topic_duplicate_skips']) ? $payload['topic_duplicate_skips'] : array(),
 			'skipped_quality_gate' => isset($payload['skipped_quality_gate']) ? (int) $payload['skipped_quality_gate'] : 0,
 			'quality_gate_skips' => isset($payload['quality_gate_skips']) && is_array($payload['quality_gate_skips']) ? $payload['quality_gate_skips'] : array(),
-		), false);
+			'insertion_failures' => isset($payload['insertion_failures']) && is_array($payload['insertion_failures']) ? $payload['insertion_failures'] : array(),
+			'retry_required' => !empty($payload['retry_required']),
+		);
+
+        update_option(self::REPORT_OPTION, $report, false);
+        $history = get_option(self::HISTORY_OPTION, array());
+        if (!is_array($history)) {
+            $history = array();
+        }
+        array_unshift($history, $report);
+        update_option(self::HISTORY_OPTION, array_slice($history, 0, self::HISTORY_LIMIT), false);
 
         return $payload;
     }

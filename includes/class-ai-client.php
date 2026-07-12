@@ -22,6 +22,9 @@ if (!defined('ABSPATH')) {
 
 class Lunara_Dispatch_AI_Client {
 
+    const MAX_INPUT_CHARS = 30000;
+    const MAX_RESPONSE_BYTES = 2097152;
+
     /**
      * Generate the Lunara Journal HTML from a block of news data,
      * using whichever provider is currently selected.
@@ -30,7 +33,8 @@ class Lunara_Dispatch_AI_Client {
      * @return string|WP_Error  HTML on success, WP_Error on failure.
      */
     public function generate($news_data) {
-        $provider = sanitize_key(get_option('lunara_dispatch_provider', 'claude'));
+        $news_data = $this->limit_text((string) $news_data, self::MAX_INPUT_CHARS);
+        $provider = class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::provider() : sanitize_key(get_option('lunara_dispatch_provider', 'openai'));
         $system   = Lunara_Dispatch_Prompts::system_prompt();
         $user_prompt = Lunara_Dispatch_Prompts::user_directive_prompt();
         $user     = Lunara_Dispatch_Prompts::user_directive($news_data);
@@ -50,7 +54,7 @@ class Lunara_Dispatch_AI_Client {
     }
 
     private function resolve_max_tokens() {
-        $t = (int) get_option('lunara_dispatch_max_tokens', 4096);
+        $t = class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::max_tokens() : (int) get_option('lunara_dispatch_max_tokens', 4096);
         if ($t < 1024)  { $t = 1024; }
         if ($t > 16000) { $t = 16000; }
         return $t;
@@ -59,14 +63,17 @@ class Lunara_Dispatch_AI_Client {
     /* ──────────────────────────── CLAUDE ──────────────────────────── */
 
     private function call_claude($system, $user_prompt, $news_data, $max_tokens) {
-        $key = trim((string) get_option('lunara_dispatch_claude_key', ''));
+        $key = $this->resolve_secret('claude');
         if (empty($key)) {
             return new WP_Error('missing_api_key', 'Anthropic API key is not set.');
         }
-        $model = sanitize_text_field(get_option('lunara_dispatch_claude_model', 'claude-opus-4-5'));
+        $model = class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::model_for_provider('claude', 'claude-opus-4-5') : sanitize_text_field(get_option('lunara_dispatch_claude_model', 'claude-opus-4-5'));
 
-        $response = wp_remote_post('https://api.anthropic.com/v1/messages', array(
+        $response = wp_safe_remote_post('https://api.anthropic.com/v1/messages', array(
             'timeout' => 120,
+            'redirection' => 0,
+            'reject_unsafe_urls' => true,
+            'limit_response_size' => self::MAX_RESPONSE_BYTES,
             'headers' => array(
                 'Content-Type'      => 'application/json',
                 'x-api-key'         => $key,
@@ -117,14 +124,17 @@ class Lunara_Dispatch_AI_Client {
     /* ──────────────────────────── OPENAI ──────────────────────────── */
 
     private function call_openai($system, $user, $max_tokens) {
-        $key = trim((string) get_option('lunara_dispatch_openai_key', ''));
+        $key = $this->resolve_secret('openai');
         if (empty($key)) {
             return new WP_Error('missing_api_key', 'OpenAI API key is not set.');
         }
-        $model = sanitize_text_field(get_option('lunara_dispatch_openai_model', 'gpt-4o'));
+        $model = class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::model_for_provider('openai', 'gpt-4o') : sanitize_text_field(get_option('lunara_dispatch_openai_model', 'gpt-4o'));
 
-        $response = wp_remote_post('https://api.openai.com/v1/chat/completions', array(
+        $response = wp_safe_remote_post('https://api.openai.com/v1/chat/completions', array(
             'timeout' => 120,
+            'redirection' => 0,
+            'reject_unsafe_urls' => true,
+            'limit_response_size' => self::MAX_RESPONSE_BYTES,
             'headers' => array(
                 'Content-Type'  => 'application/json',
                 'Authorization' => 'Bearer ' . $key,
@@ -146,14 +156,17 @@ class Lunara_Dispatch_AI_Client {
     /* ───────────────────────────── GROK ───────────────────────────── */
 
     private function call_grok($system, $user, $max_tokens) {
-        $key = trim((string) get_option('lunara_dispatch_grok_key', ''));
+        $key = $this->resolve_secret('grok');
         if (empty($key)) {
             return new WP_Error('missing_api_key', 'xAI Grok API key is not set.');
         }
-        $model = sanitize_text_field(get_option('lunara_dispatch_grok_model', 'grok-4'));
+        $model = class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::model_for_provider('grok', 'grok-4') : sanitize_text_field(get_option('lunara_dispatch_grok_model', 'grok-4'));
 
-        $response = wp_remote_post('https://api.x.ai/v1/chat/completions', array(
+        $response = wp_safe_remote_post('https://api.x.ai/v1/chat/completions', array(
             'timeout' => 120,
+            'redirection' => 0,
+            'reject_unsafe_urls' => true,
+            'limit_response_size' => self::MAX_RESPONSE_BYTES,
             'headers' => array(
                 'Content-Type'  => 'application/json',
                 'Authorization' => 'Bearer ' . $key,
@@ -187,18 +200,24 @@ class Lunara_Dispatch_AI_Client {
     /* ──────────────────────────── GEMINI ──────────────────────────── */
 
     private function call_gemini($system, $user, $max_tokens) {
-        $key = trim((string) get_option('lunara_dispatch_gemini_key', ''));
+        $key = $this->resolve_secret('gemini');
         if (empty($key)) {
             return new WP_Error('missing_api_key', 'Google Gemini API key is not set.');
         }
-        $model = sanitize_text_field(get_option('lunara_dispatch_gemini_model', 'gemini-2.5-pro'));
+        $model = class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::model_for_provider('gemini', 'gemini-2.5-pro') : sanitize_text_field(get_option('lunara_dispatch_gemini_model', 'gemini-2.5-pro'));
 
         $endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/'
-            . rawurlencode($model) . ':generateContent?key=' . rawurlencode($key);
+            . rawurlencode($model) . ':generateContent';
 
-        $response = wp_remote_post($endpoint, array(
+        $response = wp_safe_remote_post($endpoint, array(
             'timeout' => 120,
-            'headers' => array('Content-Type' => 'application/json'),
+            'redirection' => 0,
+            'reject_unsafe_urls' => true,
+            'limit_response_size' => self::MAX_RESPONSE_BYTES,
+            'headers' => array(
+                'Content-Type' => 'application/json',
+                'x-goog-api-key' => $key,
+            ),
             'body' => wp_json_encode(array(
                 'systemInstruction' => array(
                     'parts' => array(array('text' => $system)),
@@ -228,5 +247,46 @@ class Lunara_Dispatch_AI_Client {
             }
         }
         return trim($html) !== '' ? $html : new WP_Error('gemini_empty', 'Gemini returned no text.');
+    }
+
+    public static function secret_is_configured($provider) {
+        $client = new self();
+        return '' !== $client->resolve_secret($provider);
+    }
+
+    private function resolve_secret($provider) {
+        $provider = sanitize_key((string) $provider);
+        $constants = array(
+            'claude' => 'LUNARA_DISPATCH_CLAUDE_API_KEY',
+            'openai' => 'LUNARA_DISPATCH_OPENAI_API_KEY',
+            'gemini' => 'LUNARA_DISPATCH_GEMINI_API_KEY',
+            'grok'   => 'LUNARA_DISPATCH_GROK_API_KEY',
+        );
+        if (empty($constants[$provider])) {
+            return '';
+        }
+
+        $constant = $constants[$provider];
+        if (defined($constant) && is_scalar(constant($constant))) {
+            $value = trim((string) constant($constant));
+            if ('' !== $value) {
+                return $value;
+            }
+        }
+
+        $environment = getenv($constant);
+        if (is_string($environment) && '' !== trim($environment)) {
+            return trim($environment);
+        }
+
+        return trim((string) get_option('lunara_dispatch_' . $provider . '_key', ''));
+    }
+
+    private function limit_text($text, $max_chars) {
+        $max_chars = max(1, (int) $max_chars);
+        if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+            return mb_strlen($text) > $max_chars ? mb_substr($text, 0, $max_chars) : $text;
+        }
+        return strlen($text) > $max_chars ? substr($text, 0, $max_chars) : $text;
     }
 }
