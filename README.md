@@ -14,7 +14,12 @@ Dispatch aggregates film-news sources, routes eligible items through the Lunara 
 
 ## Version
 
-Current baseline: `3.2.1`.
+Current baseline: `3.2.2`.
+
+### 3.2.2 Same-second heartbeat repair
+
+- Keeps a valid worker lock when MySQL reports zero changed rows because two heartbeats wrote the same second-level payload.
+- Re-reads the authoritative lock row and accepts the no-op only when the same owner still holds an unexpired lock.
 
 ## Editorial Quality Gate
 
