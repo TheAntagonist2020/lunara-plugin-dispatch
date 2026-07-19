@@ -39,7 +39,7 @@ $prompts = dispatch_contract_file($root, 'includes/class-prompts.php');
 $control = dispatch_contract_file($root, 'includes/class-control-plane-client.php');
 $bridge = dispatch_contract_file($root, 'includes/class-journal-ingest-bridge.php');
 
-dispatch_contract_contains($bootstrap, "Version:     3.2.1", 'plugin header is not 3.2.1', $failures);
+dispatch_contract_contains($bootstrap, "Version:     3.2.2", 'plugin header is not 3.2.2', $failures);
 dispatch_contract_contains($plugin, "lunara_journal_control_plane_activated", 'Control Plane activation is not consumed', $failures);
 dispatch_contract_contains($plugin, 'add_option(self::LOCK_KEY', 'worker lock is not atomically inserted', $failures);
 dispatch_contract_contains($plugin, 'AND option_value = %s', 'worker lock lacks compare-and-swap ownership', $failures);
@@ -47,6 +47,8 @@ dispatch_contract_excludes($plugin, 'set_transient(self::LOCK_KEY', 'legacy tran
 dispatch_contract_contains($plugin, 'foundation_is_available()', 'worker does not gate runs on the required Foundation dependency', $failures);
 dispatch_contract_contains($plugin, "new WP_Error('lunara_dispatch_foundation_required'", 'manual queue does not reject an absent Foundation dependency', $failures);
 dispatch_contract_contains($plugin, '&& Lunara_Dispatch_Control_Plane_Client::available()', 'forced runs can bypass Foundation protocol compatibility', $failures);
+dispatch_contract_contains($plugin, "0 === (int) \$updated", 'same-second heartbeat no-op is not handled', $failures);
+dispatch_contract_contains($plugin, "(int) \$current['expires'] >= time()", 'same-second heartbeat does not require an unexpired owner lock', $failures);
 if (preg_match_all('/if\s*\(\s*!\s*\$this->heartbeat_lock\s*\(/', $plugin) < 4) {
     $failures[] = 'worker phases do not stop after heartbeat ownership loss';
 }

@@ -246,6 +246,18 @@ class Lunara_Dispatch_Plugin {
             wp_cache_delete(self::LOCK_KEY, 'options');
             return true;
         }
+
+        // MySQL reports zero affected rows when a heartbeat lands within the
+        // same second and therefore writes the exact payload already stored.
+        // That is not a lost lock. Re-read the authoritative row and accept
+        // the no-op only while this worker still owns an unexpired lock.
+        if (0 === (int) $updated) {
+            $current = $this->decode_lock($this->read_raw_lock());
+            return !empty($current['owner'])
+                && hash_equals((string) $current['owner'], (string) $owner)
+                && !empty($current['expires'])
+                && (int) $current['expires'] >= time();
+        }
         return false;
     }
 

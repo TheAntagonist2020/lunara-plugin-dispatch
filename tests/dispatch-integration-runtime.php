@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     define( 'ABSPATH', $root . DIRECTORY_SEPARATOR );
 }
 if ( ! defined( 'LUNARA_DISPATCH_VERSION' ) ) {
-    define( 'LUNARA_DISPATCH_VERSION', '3.2.1' );
+    define( 'LUNARA_DISPATCH_VERSION', '3.2.2' );
 }
 
 class WP_Error {
