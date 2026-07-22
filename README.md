@@ -14,7 +14,16 @@ Dispatch aggregates film-news sources, routes eligible items through the Lunara 
 
 ## Version
 
-Current baseline: `3.2.2`.
+Current baseline: `3.2.3`.
+
+### 3.2.3 Exact source-story images
+
+- Restores automatic featured-image imports from the exact story that produced each Journal draft.
+- Prefers RSS media, Open Graph, and Twitter lead-image signals and records the source story, publication, extraction signal, and any supplied credit or license metadata.
+- Matches new drafts to images only by their canonical source URL; it never guesses from titles or keywords.
+- Reuses an existing Media Library attachment when either the image URL or source-story URL has already been imported.
+- Keeps HTTPS, response-byte, file-type, dimension, decoded-pixel, draft-only, and no-overwrite guards.
+- Adds a dry-run-first `wp lunara-dispatch source-images` repair command; `--commit` is required to backfill existing Dispatch drafts.
 
 ### 3.2.2 Same-second heartbeat repair
 
@@ -69,7 +78,7 @@ Adds an asynchronous manual-run queue used by the private LUNARA GPT. `queue_man
 - Requires Journal Foundation and fails closed when it is absent, deactivated, protocol-incompatible, or missing its ingest handler. Dispatch has no standalone Journal insert fallback.
 - Bounds prioritized source input, provider payloads, remote response sizes, and image downloads.
 - Resolves provider secrets from server constants or environment variables before legacy WordPress options; admin screens show presence only.
-- Downloads images only after a draft passes editorial gates and only when the source permits reuse and the individual feed asset includes a credit, license, and public rights URL. Image bytes, dimensions, and decoded pixels are all bounded.
+- Downloads the lead image exposed by the exact source story only after a draft passes editorial gates. Attribution and source provenance are retained, explicit license metadata is preserved when supplied, and image bytes, dimensions, decoded pixels, and existing featured images remain bounded/protected.
 - Restores the packaged dynamic Journal blocks as editable inserter-visible blocks with route-scoped public styling.
 - Retires the legacy Dispatch roundup splitter. Existing-content conversion belongs to Journal Foundation's read-only preview and explicit confirmation flow.
 

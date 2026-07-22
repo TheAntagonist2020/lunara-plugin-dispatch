@@ -11,7 +11,10 @@ if ( ! defined( 'ABSPATH' ) ) {
     define( 'ABSPATH', $root . DIRECTORY_SEPARATOR );
 }
 if ( ! defined( 'LUNARA_DISPATCH_VERSION' ) ) {
-    define( 'LUNARA_DISPATCH_VERSION', '3.2.2' );
+    define( 'LUNARA_DISPATCH_VERSION', '3.2.3' );
+}
+if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
+    define( 'HOUR_IN_SECONDS', 3600 );
 }
 
 class WP_Error {
@@ -81,8 +84,44 @@ function wp_parse_url( $url, $component = -1 ) {
     return parse_url( (string) $url, $component );
 }
 
+function untrailingslashit( $value ) {
+    return rtrim( (string) $value, "/\\" );
+}
+
 function wp_http_validate_url( $url ) {
     return false !== filter_var( (string) $url, FILTER_VALIDATE_URL );
+}
+
+$dispatch_test_transients = array();
+function get_transient( $key ) {
+    global $dispatch_test_transients;
+    return array_key_exists( $key, $dispatch_test_transients ) ? $dispatch_test_transients[ $key ] : false;
+}
+
+function set_transient( $key, $value, $expiration ) {
+    global $dispatch_test_transients;
+    unset( $expiration );
+    $dispatch_test_transients[ $key ] = $value;
+    return true;
+}
+
+function wp_safe_remote_get( $url, $args = array() ) {
+    unset( $args );
+    if ( 'https://example.com/source-story' === $url ) {
+        return array(
+            'response' => array( 'code' => 200 ),
+            'body' => '<html><head><meta property="og:image" content="http://cdn.example.com/source-lead.jpg?w=1200&amp;h=675"></head></html>',
+        );
+    }
+    return new WP_Error( 'unexpected_url', 'Unexpected test URL.' );
+}
+
+function wp_remote_retrieve_response_code( $response ) {
+    return (int) ( $response['response']['code'] ?? 0 );
+}
+
+function wp_remote_retrieve_body( $response ) {
+    return (string) ( $response['body'] ?? '' );
 }
 
 function get_option( $key, $default = false ) {
@@ -265,20 +304,33 @@ $migration = ( new Lunara_Dispatch_Post_Builder() )->migrate_roundups( false, 10
 dispatch_runtime_assert( ! empty( $migration['disabled'] ) && 0 === $migration['created'], 'legacy split migration is not quarantined', $failures );
 
 $image_handler = new Lunara_Dispatch_Image_Handler();
-$rights_method = new ReflectionMethod( $image_handler, 'item_has_asset_reuse_rights' );
-$rights_item = array(
+$source_image_method = new ReflectionMethod( $image_handler, 'item_has_source_story_image' );
+$source_image_item = array(
     'image_url' => 'https://example.com/image.jpg',
-    'image_credit' => 'Example Photographer',
-    'image_license' => 'CC BY 4.0',
-    'image_rights_url' => 'https://example.com/license',
-    'image_reuse_allowed' => true,
-    'image_rights_verified' => true,
+    'image_origin' => 'article_open_graph',
+    'image_source_verified' => true,
+    'url' => 'https://example.com/story',
+    'source_label' => 'Example Trade',
     'image_blocked' => false,
 );
-dispatch_runtime_assert( true === $rights_method->invoke( $image_handler, $rights_item ), 'complete asset-specific rights metadata was rejected', $failures );
-unset( $rights_item['image_license'] );
-dispatch_runtime_assert( false === $rights_method->invoke( $image_handler, $rights_item ), 'image reuse was allowed without an asset license', $failures );
-dispatch_runtime_assert( 0 === $image_handler->sideload( 'https://example.com/image.jpg', 0, 'Image', '', '', '', 'CC BY 4.0', 'https://example.com/license' ), 'sideload continued without an asset credit', $failures );
+dispatch_runtime_assert( true === $source_image_method->invoke( $image_handler, $source_image_item ), 'exact source-story image provenance was rejected', $failures );
+unset( $source_image_item['url'] );
+dispatch_runtime_assert( false === $source_image_method->invoke( $image_handler, $source_image_item ), 'image import was allowed without its source story URL', $failures );
+dispatch_runtime_assert( 0 === $image_handler->sideload( 'https://example.com/image.jpg', 0, 'Image', '', 'Example Trade', '', '', '', 'article_open_graph' ), 'sideload continued without an exact source story URL', $failures );
+
+$exact_match_method = new ReflectionMethod( $image_handler, 'find_exact_source_item_index' );
+$exact_items = array(
+    array( 'url' => 'https://example.com/other-story' ),
+    array( 'url' => 'https://example.com/story/' ),
+);
+$exact_index = $exact_match_method->invoke(
+    $image_handler,
+    array( 'https://example.com/story' ),
+    $exact_items,
+    array( 0 => array( 'other' ), 1 => array( 'story' ) ),
+    array()
+);
+dispatch_runtime_assert( 1 === $exact_index, 'canonical source URL did not win exact image matching before keyword fallback', $failures );
 
 $feed_fetcher = new Lunara_Dispatch_Feed_Fetcher();
 $feed_method = new ReflectionMethod( $feed_fetcher, 'fetch_bounded_feed' );
@@ -286,6 +338,10 @@ $feed_args = $feed_method->invoke( $feed_fetcher, 'https://example.com/feed.xml'
 dispatch_runtime_assert( Lunara_Dispatch_Feed_Fetcher::MAX_FEED_BYTES === $feed_args['limit_response_size'], 'feed response byte budget was not applied', $failures );
 dispatch_runtime_assert( true === $feed_args['reject_unsafe_urls'] && 2 === $feed_args['redirection'], 'feed HTTP safety arguments were not applied', $failures );
 dispatch_runtime_assert( null === $http_args_callback, 'temporary feed HTTP filter leaked after fetch', $failures );
+$source_origin = '';
+$source_image = $feed_fetcher->resolve_source_story_image( 'https://example.com/source-story', $source_origin );
+dispatch_runtime_assert( 'https://cdn.example.com/source-lead.jpg' === $source_image, 'source-story Open Graph image was not normalized correctly', $failures );
+dispatch_runtime_assert( 'article_open_graph' === $source_origin, 'source-story Open Graph origin was not retained', $failures );
 
 if ( $failures ) {
     fwrite( STDERR, "Dispatch integration runtime failed:\n- " . implode( "\n- ", $failures ) . "\n" );

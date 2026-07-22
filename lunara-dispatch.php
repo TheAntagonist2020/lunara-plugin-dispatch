@@ -3,7 +3,7 @@
  * Plugin Name: Lunara Dispatch Automation
  * Plugin URI:  https://lunarafilm.com
  * Description: Aggregates film news, applies the Lunara Journal editorial voice, and hands source-traceable draft payloads to the required Lunara Journal Foundation plugin.
- * Version:     3.2.2
+ * Version:     3.2.3
  * Author:      Lunara Film
  * License:     GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LUNARA_DISPATCH_VERSION', '3.2.2');
+define('LUNARA_DISPATCH_VERSION', '3.2.3');
 define('LUNARA_DISPATCH_FILE', __FILE__);
 define('LUNARA_DISPATCH_DIR', plugin_dir_path(__FILE__));
 define('LUNARA_DISPATCH_URL', plugin_dir_url(__FILE__));

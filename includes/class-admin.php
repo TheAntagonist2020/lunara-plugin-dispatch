@@ -225,7 +225,7 @@ class Lunara_Dispatch_Admin {
         ?>
         <div style="background-color: #0a1520; color: #ffffff; padding: 20px; font-family: Georgia, serif; line-height: 1.7;">
             <h1 style="color: #c9a961; font-family: 'Trebuchet MS', sans-serif; text-transform: uppercase;">Lunara Dispatch Automation</h1>
-            <p style="color:#cccccc;">Multi-source film-news aggregation, written in the Lunara Journal voice. Each Journal story becomes its own <?php echo esc_html($status_label); ?> post with a safe available source image set as featured.</p>
+            <p style="color:#cccccc;">Multi-source film-news aggregation, written in the Lunara Journal voice. Each Journal story becomes its own <?php echo esc_html($status_label); ?> post with that exact source story's lead image set as featured when the page exposes one.</p>
             <div style="margin:16px 0 22px; padding:14px 18px; border:1px solid rgba(201,169,97,.35); background:rgba(201,169,97,.08); color:#ffffff;">
                 <strong>Managed by Journal Control Plane.</strong> Runtime settings, sources, prompts, provider selection, schedule, target post type, and publish behavior are now governed from <a style="color:#c9a961;" href="<?php echo esc_url(admin_url('edit.php?post_type=journal&page=lunara-journal-control-plane')); ?>">Journal → Control Plane</a>. This screen remains useful for API key storage, diagnostics, manual runs, and legacy visibility.
             </div>
@@ -250,8 +250,8 @@ class Lunara_Dispatch_Admin {
                         <?php endforeach; ?>
                     </ul>
                 <?php endif; ?>
-                <p style="margin:0 0 8px; color:#cccccc;"><strong>Last source-image blocks:</strong> <?php echo esc_html((string) $last_image_blocked_sources); ?></p>
-                <p style="margin:0 0 8px; color:#cccccc;"><strong>Last image path:</strong> <?php echo esc_html((string) $last_source_items_with_image); ?> available / <?php echo esc_html((string) $last_item_images_sideloaded); ?> sideloaded / <?php echo esc_html((string) $last_section_images_matched); ?> matched / <?php echo esc_html((string) $last_created_with_featured_image); ?> attached.</p>
+                <p style="margin:0 0 8px; color:#cccccc;"><strong>Source-image opt-outs:</strong> <?php echo esc_html((string) $last_image_blocked_sources); ?></p>
+                <p style="margin:0 0 8px; color:#cccccc;"><strong>Last source-story image path:</strong> <?php echo esc_html((string) $last_source_items_with_image); ?> discovered / <?php echo esc_html((string) $last_item_images_sideloaded); ?> imported / <?php echo esc_html((string) $last_section_images_matched); ?> matched / <?php echo esc_html((string) $last_created_with_featured_image); ?> attached.</p>
                 <p style="margin:0; color:#cccccc;"><strong>Last run note:</strong> <?php echo esc_html($last_message); ?></p>
             </div>
 
@@ -546,7 +546,7 @@ class Lunara_Dispatch_Admin {
         ?>
         <div style="margin:20px 0 28px; padding:18px 20px; border:1px solid rgba(201,169,97,.22); background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));">
             <h2 style="color:#c9a961; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; margin:0 0 10px;">Visual Assignment Assistant</h2>
-            <p style="margin:0 0 12px; color:#cccccc;">Drafts without featured images get a search brief instead of a random fallback image. Use this queue to find exact, safe art before publishing.</p>
+            <p style="margin:0 0 12px; color:#cccccc;">Dispatch first pulls the lead image from the exact source story. Drafts remain here only when the source page exposes no usable image or the protected download fails.</p>
             <?php if (empty($items)) : ?>
                 <p style="margin:0; color:#cccccc;">No draft Journal entries are currently missing featured images.</p>
             <?php else : ?>
