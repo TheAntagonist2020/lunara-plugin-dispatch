@@ -49,6 +49,10 @@ class Lunara_Dispatch_Plugin {
         add_action(self::MANUAL_CRON_HOOK, array($this, 'run_manual_scheduled'));
         add_action('update_option_lunara_dispatch_schedule', array($this, 'reschedule_on_frequency_change'), 10, 2);
         add_action('lunara_journal_control_plane_activated', array($this, 'reschedule_from_control_plane'), 10, 2);
+
+        if (defined('WP_CLI') && WP_CLI && class_exists('WP_CLI')) {
+            WP_CLI::add_command('lunara-dispatch source-images', array($this, 'cli_source_images'));
+        }
     }
 
     public function ensure_services() {
@@ -62,6 +66,189 @@ class Lunara_Dispatch_Plugin {
             $this->image_handler = new Lunara_Dispatch_Image_Handler();
             $this->post_builder  = new Lunara_Dispatch_Post_Builder();
         }
+    }
+
+    /**
+     * Preview or repair missing featured images on existing Dispatch drafts.
+     * Dry-run is the default; --commit is required for Media Library writes.
+     *
+     * @param array $args Positional CLI arguments.
+     * @param array $assoc_args Named CLI arguments.
+     * @return void
+     */
+    public function cli_source_images($args, $assoc_args) {
+        unset($args);
+        $limit = isset($assoc_args['limit']) ? (int) $assoc_args['limit'] : 25;
+        $commit = array_key_exists('commit', $assoc_args);
+        $report = $this->backfill_source_story_images($commit, $limit);
+
+        WP_CLI::log(wp_json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        if ($commit) {
+            WP_CLI::success(sprintf(
+                'Source-story image repair attached %d featured image(s); %d draft(s) still need a visual.',
+                (int) $report['attached'],
+                (int) $report['unresolved']
+            ));
+            return;
+        }
+        WP_CLI::success(sprintf(
+            'Dry run found %d repairable draft(s). Re-run with --commit to import and attach them.',
+            (int) $report['eligible']
+        ));
+    }
+
+    /**
+     * Restore exact source-story images to Dispatch-created Journal drafts.
+     * Never overwrites an existing featured image and never changes post status.
+     *
+     * @param bool $commit Perform imports when true; otherwise preview only.
+     * @param int  $limit Maximum missing-image drafts to inspect.
+     * @return array
+     */
+    public function backfill_source_story_images($commit = false, $limit = 25) {
+        $this->ensure_services();
+        $limit = max(1, min(100, (int) $limit));
+        $post_ids = get_posts(array(
+            'post_type' => 'journal',
+            'post_status' => 'draft',
+            'fields' => 'ids',
+            'posts_per_page' => $limit,
+            'orderby' => 'date',
+            'order' => 'DESC',
+            'no_found_rows' => true,
+            'meta_query' => array(
+                'relation' => 'AND',
+                array(
+                    'key' => '_lunara_dispatch_run_id',
+                    'compare' => 'EXISTS',
+                ),
+                array(
+                    'relation' => 'OR',
+                    array(
+                        'key' => '_thumbnail_id',
+                        'compare' => 'NOT EXISTS',
+                    ),
+                    array(
+                        'key' => '_thumbnail_id',
+                        'value' => '0',
+                        'compare' => '=',
+                    ),
+                ),
+            ),
+        ));
+
+        $report = array(
+            'mode' => $commit ? 'commit' : 'dry-run',
+            'scanned' => 0,
+            'eligible' => 0,
+            'attached' => 0,
+            'unresolved' => 0,
+            'items' => array(),
+        );
+
+        foreach ($post_ids as $post_id) {
+            $post_id = (int) $post_id;
+            $report['scanned']++;
+            $source = $this->source_context_for_post($post_id);
+            $row = array(
+                'post_id' => $post_id,
+                'title' => get_the_title($post_id),
+                'source_url' => $source['url'],
+                'source_label' => $source['label'],
+                'image_url' => '',
+                'image_origin' => '',
+                'status' => 'source_missing',
+            );
+
+            if ('' === $source['url']) {
+                $report['unresolved']++;
+                $report['items'][] = $row;
+                continue;
+            }
+
+            $origin = '';
+            $image_url = $this->feed_fetcher->resolve_source_story_image($source['url'], $origin);
+            $row['image_url'] = $image_url;
+            $row['image_origin'] = $origin;
+            if ('' === $image_url || '' === $origin) {
+                $row['status'] = 'source_image_not_found';
+                $report['unresolved']++;
+                $report['items'][] = $row;
+                continue;
+            }
+
+            $report['eligible']++;
+            $row['status'] = 'ready';
+            if ($commit) {
+                $attachment_id = $this->image_handler->sideload(
+                    $image_url,
+                    $post_id,
+                    get_the_title($post_id),
+                    $source['url'],
+                    $source['label'],
+                    '',
+                    '',
+                    '',
+                    $origin
+                );
+                if ($attachment_id > 0) {
+                    set_post_thumbnail($post_id, $attachment_id);
+                    update_post_meta($post_id, '_lunara_dispatch_featured_image_source_url', esc_url_raw($source['url']));
+                    update_post_meta($post_id, '_lunara_dispatch_featured_image_match', 'backfill_exact_source_url');
+                    delete_post_meta($post_id, '_lunara_dispatch_visual_status');
+                    delete_post_meta($post_id, '_lunara_dispatch_visual_search_query');
+                    delete_post_meta($post_id, '_lunara_dispatch_visual_brief');
+                    $row['status'] = 'attached';
+                    $row['attachment_id'] = (int) $attachment_id;
+                    $report['attached']++;
+                } else {
+                    $row['status'] = 'import_failed';
+                    $report['unresolved']++;
+                }
+            }
+            $report['items'][] = $row;
+        }
+
+        return $report;
+    }
+
+    private function source_context_for_post($post_id) {
+        $source_url = '';
+        $source_label = '';
+        $source_items = function_exists('get_field') ? get_field('journal_source_items', (int) $post_id) : array();
+        if (is_array($source_items)) {
+            foreach ($source_items as $source) {
+                if (!is_array($source) || empty($source['source_url'])) {
+                    continue;
+                }
+                $source_url = esc_url_raw((string) $source['source_url'], array('https'));
+                $source_label = sanitize_text_field((string) ($source['source_publication'] ?? ''));
+                if ('' !== $source_url) {
+                    break;
+                }
+            }
+        }
+
+        if ('' === $source_url) {
+            $source_urls = get_post_meta((int) $post_id, '_lunara_dispatch_source_urls', true);
+            $source_urls = is_array($source_urls) ? $source_urls : array($source_urls);
+            foreach ($source_urls as $candidate) {
+                $candidate = esc_url_raw((string) $candidate, array('https'));
+                if ('' !== $candidate) {
+                    $source_url = $candidate;
+                    break;
+                }
+            }
+        }
+
+        if ('' === $source_label && '' !== $source_url) {
+            $source_label = preg_replace('/^www\./i', '', (string) wp_parse_url($source_url, PHP_URL_HOST));
+        }
+
+        return array(
+            'url' => $source_url,
+            'label' => sanitize_text_field((string) $source_label),
+        );
     }
 
     public static function on_activate() {
@@ -396,8 +583,8 @@ class Lunara_Dispatch_Plugin {
                 $image_status  = ! empty( $i['image_blocked'] )
                     ? 'blocked source image'
                     : ( ! empty( $i['image_url'] )
-                        ? ( ! empty( $i['image_reuse_allowed'] ) ? 'approved reusable image available' : 'image requires rights review' )
-                        : 'no reusable image found' );
+                        ? ( ! empty( $i['image_source_verified'] ) ? 'exact source-story image available' : 'source image could not be verified' )
+                        : 'no source-story image found' );
                 $lines[] = "[BEGIN_UNTRUSTED_SOURCE_ITEM]\nSOURCE: " . $i['source_label']
                     . "\nTITLE: " . $i['title']
                     . "\nLINK: "  . $i['url']
@@ -642,13 +829,13 @@ class Lunara_Dispatch_Plugin {
     private function summarize_source_image_status(array $items) {
         return array(
             'source_items_with_image' => count(array_filter($items, static function ($item) {
-                return empty($item['image_blocked']) && !empty($item['image_url']) && !empty($item['image_rights_verified']);
+                return empty($item['image_blocked']) && !empty($item['image_url']) && !empty($item['image_source_verified']);
             })),
             'image_blocked_sources' => count(array_filter($items, static function ($item) {
                 return !empty($item['image_blocked']);
             })),
             'source_items_without_image' => count(array_filter($items, static function ($item) {
-                return empty($item['image_blocked']) && (empty($item['image_url']) || empty($item['image_rights_verified']));
+                return empty($item['image_blocked']) && (empty($item['image_url']) || empty($item['image_source_verified']));
             })),
         );
     }

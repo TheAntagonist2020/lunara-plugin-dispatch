@@ -11,6 +11,7 @@
  *       'url'     => 'https://www.worldofreel.com/blog?format=rss',
  *       'enabled' => true,
  *       'max'     => 10,               // max items per run from this feed
+ *       'image_import_disabled' => false, // explicit source-image opt-out
  *     ],
  *     ...
  *   ]
@@ -74,6 +75,7 @@ class Lunara_Dispatch_Sources {
                 'max'     => isset($row['max']) ? max(1, min(50, (int) $row['max'])) : 10,
                 'priority' => isset($row['priority']) ? max(1, min(10, (int) $row['priority'])) : 5,
                 'image_reuse_allowed' => !empty($row['image_reuse_allowed']),
+                'image_import_disabled' => !empty($row['image_import_disabled']),
             );
         }
         return $out;
@@ -112,6 +114,7 @@ class Lunara_Dispatch_Sources {
                 'max'      => isset( $row['max'] ) ? max( 1, min( 50, (int) $row['max'] ) ) : 10,
                 'priority' => isset( $row['priority'] ) ? max( 1, min( 10, (int) $row['priority'] ) ) : 5,
                 'image_reuse_allowed' => ! empty( $row['image_reuse_allowed'] ),
+                'image_import_disabled' => ! empty( $row['image_import_disabled'] ),
             );
         }
         return $out;
@@ -154,6 +157,7 @@ class Lunara_Dispatch_Sources {
                 'max'     => isset($row['max']) ? max(1, min(50, (int) $row['max'])) : 10,
                 'priority' => isset($row['priority']) ? max(1, min(10, (int) $row['priority'])) : 5,
                 'image_reuse_allowed' => !empty($row['image_reuse_allowed']),
+                'image_import_disabled' => !empty($row['image_import_disabled']),
             );
         }
         update_option(self::OPTION, $clean, false);

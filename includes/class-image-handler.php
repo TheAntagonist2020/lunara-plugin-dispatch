@@ -33,11 +33,11 @@ class Lunara_Dispatch_Image_Handler {
 	 * @param string $image_credit Image credit/copyright text.
 	 * @return int
 	 */
-	public function sideload( $image_url, $parent_post_id = 0, $title = '', $source_url = '', $source_label = '', $image_credit = '', $image_license = '', $image_rights_url = '' ) {
+	public function sideload( $image_url, $parent_post_id = 0, $title = '', $source_url = '', $source_label = '', $image_credit = '', $image_license = '', $image_rights_url = '', $image_origin = '' ) {
 		if ( empty( $image_url ) || ! $this->is_public_https_url( $image_url ) ) {
 			return 0;
 		}
-		if ( '' === trim( (string) $image_credit ) || '' === trim( (string) $image_license ) || ! $this->is_public_https_url( $image_rights_url ) ) {
+		if ( ! $this->is_public_https_url( $source_url ) || '' === trim( (string) $source_label ) || '' === trim( (string) $image_origin ) ) {
 			return 0;
 		}
 
@@ -57,11 +57,20 @@ class Lunara_Dispatch_Image_Handler {
 			'fields' => 'ids',
 			'posts_per_page' => 1,
 			'no_found_rows' => true,
-			'meta_key' => '_lunara_dispatch_image_url',
-			'meta_value' => esc_url_raw( (string) $image_url ),
+			'meta_query' => array(
+				'relation' => 'OR',
+				array(
+					'key' => '_lunara_dispatch_image_url',
+					'value' => esc_url_raw( (string) $image_url ),
+				),
+				array(
+					'key' => '_lunara_dispatch_source_url',
+					'value' => esc_url_raw( (string) $source_url ),
+				),
+			),
 		) );
 		if ( ! empty( $existing[0] ) ) {
-			$this->store_source_context( (int) $existing[0], $image_url, $source_url, $source_label, $image_credit, $image_license, $image_rights_url );
+			$this->store_source_context( (int) $existing[0], $image_url, $source_url, $source_label, $image_credit, $image_license, $image_rights_url, $image_origin );
 			$this->maybe_update_attachment_alt( (int) $existing[0], $title );
 			return (int) $existing[0];
 		}
@@ -74,7 +83,7 @@ class Lunara_Dispatch_Image_Handler {
 		}
 
 		$this->record_attachment_quality( (int) $attachment_id );
-		$this->store_source_context( (int) $attachment_id, $image_url, $source_url, $source_label, $image_credit, $image_license, $image_rights_url );
+		$this->store_source_context( (int) $attachment_id, $image_url, $source_url, $source_label, $image_credit, $image_license, $image_rights_url, $image_origin );
 		$this->maybe_update_attachment_alt( (int) $attachment_id, $title );
 
 		return (int) $attachment_id;
@@ -98,6 +107,7 @@ class Lunara_Dispatch_Image_Handler {
 			'redirection' => 2,
 			'reject_unsafe_urls' => true,
 			'limit_response_size' => self::MAX_IMAGE_BYTES,
+			'user-agent' => 'Mozilla/5.0 (compatible; LunaraDispatch/3.2.3; +https://lunarafilm.com)',
 			'stream' => true,
 			'filename' => $tmp,
 		) );
@@ -137,8 +147,14 @@ class Lunara_Dispatch_Image_Handler {
 
 		$path = (string) wp_parse_url( $image_url, PHP_URL_PATH );
 		$name = sanitize_file_name( wp_basename( $path ) );
-		if ( '' === $name || ! preg_match( '/\.(?:jpe?g|png|gif|webp|avif)$/i', $name ) ) {
-			$name = 'lunara-dispatch-' . substr( md5( $image_url ), 0, 12 ) . '.' . $extensions[ $mime ];
+		$current_extension = strtolower( (string) pathinfo( $name, PATHINFO_EXTENSION ) );
+		$valid_extensions = 'image/jpeg' === $mime ? array( 'jpg', 'jpeg' ) : array( $extensions[ $mime ] );
+		if ( '' === $name || ! in_array( $current_extension, $valid_extensions, true ) ) {
+			$base_name = sanitize_file_name( (string) pathinfo( $name, PATHINFO_FILENAME ) );
+			if ( '' === $base_name ) {
+				$base_name = 'lunara-dispatch-' . substr( md5( $image_url ), 0, 12 );
+			}
+			$name = $base_name . '.' . $extensions[ $mime ];
 		}
 
 		$file = array(
@@ -198,7 +214,7 @@ class Lunara_Dispatch_Image_Handler {
 
 		foreach ( $items as $idx => $item ) {
 			$out[ $idx ] = 0;
-			if ( ! $this->item_has_asset_reuse_rights( $item ) ) {
+			if ( ! $this->item_has_source_story_image( $item ) ) {
 				continue;
 			}
 
@@ -210,7 +226,8 @@ class Lunara_Dispatch_Image_Handler {
 				$item['source_label'] ?? '',
 				$item['image_credit'] ?? '',
 				$item['image_license'] ?? '',
-				$item['image_rights_url'] ?? ''
+				$item['image_rights_url'] ?? '',
+				$item['image_origin'] ?? ''
 			);
 			if ( $attachment > 0 ) {
 				$out[ $idx ] = $attachment;
@@ -221,8 +238,8 @@ class Lunara_Dispatch_Image_Handler {
 	}
 
 	/**
-	 * Store provenance so downstream featured-image guards can block risky
-	 * source imagery even after the file has been copied into the Media Library.
+	 * Store provenance so the Media Library retains the exact source story,
+	 * publication, extraction signal, and any supplied rights information.
 	 *
 	 * @param int    $attachment_id Attachment ID.
 	 * @param string $image_url     Remote image URL.
@@ -231,7 +248,7 @@ class Lunara_Dispatch_Image_Handler {
 	 * @param string $image_credit  Image credit/copyright text.
 	 * @return void
 	 */
-	private function store_source_context( $attachment_id, $image_url, $source_url = '', $source_label = '', $image_credit = '', $image_license = '', $image_rights_url = '' ) {
+	private function store_source_context( $attachment_id, $image_url, $source_url = '', $source_label = '', $image_credit = '', $image_license = '', $image_rights_url = '', $image_origin = '' ) {
 		$attachment_id = (int) $attachment_id;
 		if ( $attachment_id <= 0 ) {
 			return;
@@ -259,7 +276,15 @@ class Lunara_Dispatch_Image_Handler {
 		if ( '' !== (string) $image_rights_url ) {
 			update_post_meta( $attachment_id, '_lunara_dispatch_image_rights_url', esc_url_raw( (string) $image_rights_url, array( 'https' ) ) );
 		}
-		update_post_meta( $attachment_id, '_lunara_dispatch_image_rights_verified', '1' );
+		if ( '' !== (string) $image_origin ) {
+			update_post_meta( $attachment_id, '_lunara_dispatch_image_origin', sanitize_key( (string) $image_origin ) );
+		}
+		update_post_meta( $attachment_id, '_lunara_dispatch_image_source_verified', '1' );
+		if ( '' !== trim( (string) $image_license ) && $this->is_public_https_url( $image_rights_url ) ) {
+			update_post_meta( $attachment_id, '_lunara_dispatch_image_rights_verified', '1' );
+		} else {
+			delete_post_meta( $attachment_id, '_lunara_dispatch_image_rights_verified' );
+		}
 
 		$this->maybe_update_attachment_caption( $attachment_id, $source_label, $image_credit );
 	}
@@ -487,8 +512,8 @@ class Lunara_Dispatch_Image_Handler {
 
 	/**
 	 * Match and download only after Journal drafts have passed all text gates.
-	 * Source images remain manual Needs Visual work unless their source record
-	 * explicitly grants reuse.
+	 * Each accepted draft uses its canonical source URL for an exact match. If
+	 * that provenance is missing, the draft remains unillustrated for review.
 	 *
 	 * @param int[] $post_ids Accepted Journal draft IDs.
 	 * @param array $items    Bounded source items from this run.
@@ -498,37 +523,22 @@ class Lunara_Dispatch_Image_Handler {
 		$result = array( 'matched' => 0, 'sideloaded' => 0 );
 		$candidates = array();
 		foreach ( $items as $idx => $item ) {
-			if ( ! is_array( $item ) || ! $this->item_has_asset_reuse_rights( $item ) ) {
+			if ( ! is_array( $item ) || ! $this->item_has_source_story_image( $item ) ) {
 				continue;
 			}
-			$candidates[ $idx ] = $this->extract_keywords(
-				( $item['title'] ?? '' ) . ' ' . ( $item['description'] ?? '' ) . ' ' . ( $item['source_label'] ?? '' )
-			);
+			$candidates[ $idx ] = true;
 		}
 
 		$used = array();
 		foreach ( $post_ids as $post_id ) {
 			$post = get_post( (int) $post_id );
-			if ( ! $post || 'journal' !== $post->post_type || 'draft' !== $post->post_status ) {
+			if ( ! $post || 'journal' !== $post->post_type || 'draft' !== $post->post_status || get_post_thumbnail_id( (int) $post_id ) ) {
 				continue;
 			}
-			$words = $this->extract_keywords( $post->post_title . ' ' . $post->post_content );
-			$best_idx = -1;
-			$best_score = 0;
-			foreach ( $candidates as $idx => $candidate_words ) {
-				if ( isset( $used[ $idx ] ) ) {
-					continue;
-				}
-				$score = count( array_intersect( $words, $candidate_words ) );
-				if ( $score > $best_score ) {
-					$best_score = $score;
-					$best_idx = $idx;
-				}
-			}
-
-			$denominator = $best_idx >= 0 ? min( count( $words ), count( $candidates[ $best_idx ] ) ) : 0;
-			$ratio = $denominator > 0 ? $best_score / $denominator : 0;
-			if ( $best_idx < 0 || $best_score < self::MIN_SECTION_IMAGE_MATCH_SCORE || $ratio < self::MIN_SECTION_IMAGE_MATCH_RATIO ) {
+			$source_urls = get_post_meta( (int) $post_id, '_lunara_dispatch_source_urls', true );
+			$source_urls = is_array( $source_urls ) ? $source_urls : array_filter( array( $source_urls ) );
+			$best_idx = $this->find_exact_source_item_index( $source_urls, $items, $candidates, $used );
+			if ( $best_idx < 0 ) {
 				continue;
 			}
 
@@ -541,7 +551,8 @@ class Lunara_Dispatch_Image_Handler {
 				$item['source_label'] ?? '',
 				$item['image_credit'] ?? '',
 				$item['image_license'] ?? '',
-				$item['image_rights_url'] ?? ''
+				$item['image_rights_url'] ?? '',
+				$item['image_origin'] ?? ''
 			);
 			if ( $attachment_id <= 0 ) {
 				continue;
@@ -551,6 +562,8 @@ class Lunara_Dispatch_Image_Handler {
 			$result['matched']++;
 			$result['sideloaded']++;
 			set_post_thumbnail( (int) $post_id, (int) $attachment_id );
+			update_post_meta( (int) $post_id, '_lunara_dispatch_featured_image_source_url', esc_url_raw( (string) ( $item['url'] ?? '' ) ) );
+			update_post_meta( (int) $post_id, '_lunara_dispatch_featured_image_match', 'exact_source_url' );
 			delete_post_meta( (int) $post_id, '_lunara_dispatch_visual_status' );
 			delete_post_meta( (int) $post_id, '_lunara_dispatch_visual_search_query' );
 			delete_post_meta( (int) $post_id, '_lunara_dispatch_visual_brief' );
@@ -559,15 +572,38 @@ class Lunara_Dispatch_Image_Handler {
 		return $result;
 	}
 
-	private function item_has_asset_reuse_rights( array $item ) {
+	private function item_has_source_story_image( array $item ) {
 		return empty( $item['image_blocked'] )
-			&& ! empty( $item['image_reuse_allowed'] )
-			&& ! empty( $item['image_rights_verified'] )
+			&& ! empty( $item['image_source_verified'] )
 			&& ! empty( $item['image_url'] )
-			&& ! empty( $item['image_credit'] )
-			&& ! empty( $item['image_license'] )
-			&& ! empty( $item['image_rights_url'] )
-			&& $this->is_public_https_url( $item['image_rights_url'] );
+			&& ! empty( $item['url'] )
+			&& ! empty( $item['source_label'] )
+			&& ! empty( $item['image_origin'] )
+			&& $this->is_public_https_url( $item['image_url'] )
+			&& $this->is_public_https_url( $item['url'] );
+	}
+
+	private function find_exact_source_item_index( array $source_urls, array $items, array $candidates, array $used ) {
+		$canonical_sources = array_values( array_filter( array_map( array( $this, 'canonical_source_url' ), $source_urls ) ) );
+		if ( empty( $canonical_sources ) ) {
+			return -1;
+		}
+
+		foreach ( array_keys( $candidates ) as $idx ) {
+			if ( isset( $used[ $idx ] ) || empty( $items[ $idx ]['url'] ) ) {
+				continue;
+			}
+			if ( in_array( $this->canonical_source_url( $items[ $idx ]['url'] ), $canonical_sources, true ) ) {
+				return (int) $idx;
+			}
+		}
+
+		return -1;
+	}
+
+	private function canonical_source_url( $url ) {
+		$url = esc_url_raw( (string) $url, array( 'https' ) );
+		return '' === $url ? '' : strtolower( untrailingslashit( $url ) );
 	}
 
 	/**

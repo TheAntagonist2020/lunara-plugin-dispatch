@@ -85,12 +85,16 @@ class Lunara_Dispatch_Feed_Fetcher {
                 $seen_in_this_run[$fp] = true;
 
                 $image_blocked = $this->is_image_blocked_source( $source, $url );
-                $source_allows_images = !$image_blocked && !empty($source['image_reuse_allowed']);
+                $source_allows_images = !$image_blocked;
                 $image_origin = '';
                 $image_url = $source_allows_images ? $this->extract_image_url($rss_item, $url, $image_origin) : '';
                 $image_credit = $source_allows_images ? $this->extract_image_credit($rss_item) : '';
                 $image_rights = $source_allows_images ? $this->extract_image_rights($rss_item) : array();
-                $image_reuse_allowed = $source_allows_images && $this->has_asset_reuse_rights(
+                $image_source_verified = $source_allows_images && $this->is_source_story_image(
+                    $image_url,
+                    $image_origin
+                );
+                $image_rights_verified = $source_allows_images && $this->has_asset_reuse_rights(
                     $image_url,
                     $image_origin,
                     $image_credit,
@@ -106,11 +110,12 @@ class Lunara_Dispatch_Feed_Fetcher {
                     'image_origin' => $image_origin,
                     'image_license' => $image_rights['license'] ?? '',
                     'image_rights_url' => $image_rights['url'] ?? '',
-                    'image_rights_verified' => $image_reuse_allowed,
+                    'image_source_verified' => $image_source_verified,
+                    'image_rights_verified' => $image_rights_verified,
                     'source_label' => $source['label'],
                     'source_policy' => $this->source_policy_note( $source, $url ),
                     'image_blocked' => $image_blocked,
-                    'image_reuse_allowed' => $image_reuse_allowed,
+                    'image_reuse_allowed' => $image_source_verified,
                     'priority'     => isset($source['priority']) ? (int) $source['priority'] : 5,
                     'fingerprint'  => $fp,
                 );
@@ -184,7 +189,8 @@ class Lunara_Dispatch_Feed_Fetcher {
      * @return bool
      */
     private function is_image_blocked_source( array $source, $article_url = '' ) {
-        return $this->is_world_of_reel_source( $source, $article_url );
+        unset( $article_url );
+        return ! empty( $source['image_import_disabled'] );
     }
 
     /**
@@ -196,7 +202,7 @@ class Lunara_Dispatch_Feed_Fetcher {
      */
     private function source_policy_note( array $source, $article_url = '' ) {
         if ( $this->is_world_of_reel_source( $source, $article_url ) ) {
-            return 'World of Reel fast-signal source: attribute when dependent, do not mimic structure or headline logic, add a distinct Lunara angle, and do not use its images.';
+            return 'World of Reel fast-signal source: attribute when dependent, do not mimic structure or headline logic, and add a distinct Lunara angle.';
         }
 
         return '';
@@ -226,8 +232,8 @@ class Lunara_Dispatch_Feed_Fetcher {
     }
 
     /**
-     * Layered image extraction: RSS-native first, then scrape og:image,
-     * then scrape first <img> from the article HTML.
+     * Layered image extraction: RSS-native media first, then the exact
+     * article's Open Graph/Twitter image, then RSS thumbnail/body fallbacks.
      */
     private function extract_image_url($item, $article_url, &$origin = '') {
         $origin = '';
@@ -266,9 +272,10 @@ class Lunara_Dispatch_Feed_Fetcher {
         }
 
         // 3. Scrape the article page for richer candidates.
-        $scraped = $this->scrape_article_image($article_url);
-        if (!empty($scraped)) {
-            $origin = 'article_scrape';
+        $scrape_origin = '';
+        $scraped = $this->scrape_article_image($article_url, $scrape_origin);
+        if (!empty($scraped) && $this->is_source_story_image($scraped, $scrape_origin)) {
+            $origin = $scrape_origin;
             return $scraped;
         }
 
@@ -372,6 +379,29 @@ class Lunara_Dispatch_Feed_Fetcher {
     }
 
     /**
+     * Confirm that the candidate was exposed by the exact source story or its
+     * RSS item rather than discovered through an unrelated image search.
+     *
+     * @param string $image_url Candidate image URL.
+     * @param string $origin    Extraction signal.
+     * @return bool
+     */
+    private function is_source_story_image($image_url, $origin) {
+        if (!$this->is_public_https_url($image_url)) {
+            return false;
+        }
+
+        return in_array((string) $origin, array(
+            'rss_enclosure',
+            'media_content',
+            'article_open_graph',
+            'article_twitter',
+            'media_thumbnail',
+            'rss_body',
+        ), true);
+    }
+
+    /**
      * Normalize feed-supplied credit text before it is stored on attachments.
      *
      * @param string $credit Raw credit.
@@ -389,14 +419,34 @@ class Lunara_Dispatch_Feed_Fetcher {
      * Pull og:image / twitter:image from the article page (cached per URL
      * for 6 hours so we don't repeatedly hammer outlets on every cron run).
      */
-    private function scrape_article_image($url) {
+    public function resolve_source_story_image($url, &$origin = '') {
+        $origin = '';
+        $image_url = $this->scrape_article_image($url, $origin);
+        if (!$this->is_source_story_image($image_url, $origin)) {
+            $origin = '';
+            return '';
+        }
+        return $image_url;
+    }
+
+    private function scrape_article_image($url, &$origin = '') {
+        $origin = '';
         if (empty($url) || !$this->is_public_https_url($url)) {
             return '';
         }
-        $cache_key = 'lunara_og_' . md5($url);
+        // Version the cache so the 3.2.3 exact-source rules never inherit a
+        // legacy scalar that may have come from a generic body image.
+        $cache_key = 'lunara_source_image_v2_' . md5($url);
         $cached    = get_transient($cache_key);
         if ($cached !== false) {
-            return $cached === '__none__' ? '' : $cached;
+            if ('__none__' === $cached) {
+                return '';
+            }
+            if (is_array($cached) && !empty($cached['url'])) {
+                $origin = !empty($cached['origin']) ? sanitize_key($cached['origin']) : 'article_cached';
+                return $this->normalize_image_url($cached['url']);
+            }
+            return '';
         }
 
         $response = wp_safe_remote_get($url, array(
@@ -404,7 +454,7 @@ class Lunara_Dispatch_Feed_Fetcher {
             'redirection' => 2,
             'reject_unsafe_urls' => true,
             'limit_response_size' => self::MAX_ARTICLE_BYTES,
-            'user-agent' => 'Mozilla/5.0 (compatible; LunaraDispatch/3.0; +https://lunarafilm.com)',
+            'user-agent' => 'Mozilla/5.0 (compatible; LunaraDispatch/3.2.3; +https://lunarafilm.com)',
         ));
 
         if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) !== 200) {
@@ -420,16 +470,17 @@ class Lunara_Dispatch_Feed_Fetcher {
 
         // Prefer og:image, then twitter:image, then richest image tag.
         $patterns = array(
-            '/<meta[^>]+property=["\']og:image(?::secure_url)?["\'][^>]+content=["\']([^"\']+)["\']/i',
-            '/<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image(?::secure_url)?["\']/i',
-            '/<meta[^>]+name=["\']twitter:image(?::src)?["\'][^>]+content=["\']([^"\']+)["\']/i',
-            '/<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']twitter:image(?::src)?["\']/i',
+            array('/<meta[^>]+property=["\']og:image(?::(?:secure_url|url))?["\'][^>]+content=["\']([^"\']+)["\']/i', 'article_open_graph'),
+            array('/<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image(?::(?:secure_url|url))?["\']/i', 'article_open_graph'),
+            array('/<meta[^>]+name=["\']twitter:image(?::src)?["\'][^>]+content=["\']([^"\']+)["\']/i', 'article_twitter'),
+            array('/<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']twitter:image(?::src)?["\']/i', 'article_twitter'),
         );
-        foreach ($patterns as $rx) {
-            if (preg_match($rx, $html, $m)) {
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern[0], $html, $m)) {
                 $found = $this->normalize_image_url(html_entity_decode($m[1], ENT_QUOTES));
                 if (!empty($found)) {
-                    set_transient($cache_key, $found, 6 * HOUR_IN_SECONDS);
+                    $origin = $pattern[1];
+                    set_transient($cache_key, array('url' => $found, 'origin' => $origin), 6 * HOUR_IN_SECONDS);
                     return $found;
                 }
             }
@@ -437,20 +488,23 @@ class Lunara_Dispatch_Feed_Fetcher {
 
         $srcset = $this->extract_largest_srcset_candidate($html);
         if (!empty($srcset)) {
-            set_transient($cache_key, $srcset, 6 * HOUR_IN_SECONDS);
+            $origin = 'article_srcset';
+            set_transient($cache_key, array('url' => $srcset, 'origin' => $origin), 6 * HOUR_IN_SECONDS);
             return $srcset;
         }
 
         $lazy = $this->extract_best_lazy_image_candidate($html);
         if (!empty($lazy)) {
-            set_transient($cache_key, $lazy, 6 * HOUR_IN_SECONDS);
+            $origin = 'article_lazy';
+            set_transient($cache_key, array('url' => $lazy, 'origin' => $origin), 6 * HOUR_IN_SECONDS);
             return $lazy;
         }
 
         if (preg_match('/<img[^>]+src=["\']([^"\']+)["\']/i', $html, $m)) {
             $found = $this->normalize_image_url($m[1]);
             if (!empty($found)) {
-                set_transient($cache_key, $found, 6 * HOUR_IN_SECONDS);
+                $origin = 'article_body';
+                set_transient($cache_key, array('url' => $found, 'origin' => $origin), 6 * HOUR_IN_SECONDS);
                 return $found;
             }
         }
@@ -464,7 +518,11 @@ class Lunara_Dispatch_Feed_Fetcher {
      * keeping the image on the same host.
      */
     private function normalize_image_url($url) {
-        $url = esc_url_raw(html_entity_decode((string) $url, ENT_QUOTES));
+        $url = trim(html_entity_decode((string) $url, ENT_QUOTES));
+        if (0 === strpos($url, '//')) {
+            $url = 'https:' . $url;
+        }
+        $url = esc_url_raw($url);
         if (empty($url)) {
             return '';
         }
@@ -472,6 +530,13 @@ class Lunara_Dispatch_Feed_Fetcher {
         $parts = wp_parse_url($url);
         if (empty($parts['scheme']) || empty($parts['host']) || empty($parts['path'])) {
             return $url;
+        }
+
+        $scheme = strtolower((string) $parts['scheme']);
+        if ('http' === $scheme) {
+            $parts['scheme'] = 'https';
+        } elseif ('https' !== $scheme) {
+            return '';
         }
 
         $path = preg_replace('/-\d{2,5}x\d{2,5}(?=\.(?:jpe?g|png|gif|webp|avif)$)/i', '', $parts['path']);
