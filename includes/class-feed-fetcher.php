@@ -434,7 +434,7 @@ class Lunara_Dispatch_Feed_Fetcher {
         if (empty($url) || !$this->is_public_https_url($url)) {
             return '';
         }
-        // Version the cache so the 3.2.3 exact-source rules never inherit a
+        // Version the cache so the 3.2.4 exact-source rules never inherit a
         // legacy scalar that may have come from a generic body image.
         $cache_key = 'lunara_source_image_v2_' . md5($url);
         $cached    = get_transient($cache_key);
@@ -454,7 +454,7 @@ class Lunara_Dispatch_Feed_Fetcher {
             'redirection' => 2,
             'reject_unsafe_urls' => true,
             'limit_response_size' => self::MAX_ARTICLE_BYTES,
-            'user-agent' => 'Mozilla/5.0 (compatible; LunaraDispatch/3.2.3; +https://lunarafilm.com)',
+            'user-agent' => 'Mozilla/5.0 (compatible; LunaraDispatch/3.2.4; +https://lunarafilm.com)',
         ));
 
         if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) !== 200) {
@@ -466,6 +466,9 @@ class Lunara_Dispatch_Feed_Fetcher {
         if (empty($html) || strlen($html) >= self::MAX_ARTICLE_BYTES) {
             set_transient($cache_key, '__none__', 6 * HOUR_IN_SECONDS);
             return '';
+        }
+        if ( function_exists( 'do_action' ) ) {
+            do_action( 'lunara_dispatch_article_html_fetched', $url, $html );
         }
 
         // Prefer og:image, then twitter:image, then richest image tag.

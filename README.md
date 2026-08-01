@@ -14,7 +14,17 @@ Dispatch aggregates film-news sources, routes eligible items through the Lunara 
 
 ## Version
 
-Current baseline: `3.2.3`.
+Current baseline: `3.2.4`.
+
+### 3.2.4 Source Radar full-context bridge
+
+- Consumes only new private Source Radar signals exposed by Journal Foundation 1.2.6 and keeps IFTTT in its intended transport role.
+- Retrieves article text with WordPress safe HTTP validation, a 1 MB response ceiling, two-redirect cap, ten-second timeout, eight-read run budget, and positive/negative transient caching.
+- Extracts the likely article body, caps ephemeral model context at 12,000 characters, and places it inside the existing untrusted-source envelope.
+- Keeps copied article bodies out of the canonical Journal source ledger; only the bounded source excerpt, headline, publication, and URL persist.
+- Reuses the exact source-story image path for captured Source Radar URLs when an Open Graph/Twitter lead is available.
+- Triages Source Radar only after a draft or an allowlisted editorial terminal outcome. Network, AI, insertion, and lock failures remain eligible for retry.
+- Does not select or change an AI provider. The active Journal Control Plane remains authoritative, and Dispatch remains draft-only with explicit approval required for publication.
 
 ### 3.2.3 Exact source-story images
 
