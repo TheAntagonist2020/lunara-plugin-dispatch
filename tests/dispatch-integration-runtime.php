@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     define( 'ABSPATH', $root . DIRECTORY_SEPARATOR );
 }
 if ( ! defined( 'LUNARA_DISPATCH_VERSION' ) ) {
-    define( 'LUNARA_DISPATCH_VERSION', '3.2.5' );
+    define( 'LUNARA_DISPATCH_VERSION', '3.2.6' );
 }
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
     define( 'HOUR_IN_SECONDS', 3600 );
@@ -172,6 +172,47 @@ function remove_filter( $hook, $callback ) {
 function fetch_feed( $url ) {
     global $http_args_callback;
     return is_callable( $http_args_callback ) ? $http_args_callback( array(), $url ) : array();
+}
+
+class Dispatch_Runtime_Feed_Author {
+    private $name;
+
+    public function __construct( $name ) {
+        $this->name = $name;
+    }
+
+    public function get_name() {
+        return $this->name;
+    }
+}
+
+class Dispatch_Runtime_Feed_Item {
+    public $requested_date_format = '';
+    private $date;
+    private $author;
+    private $creator;
+
+    public function __construct( $date = '', $author = null, $creator = '' ) {
+        $this->date = $date;
+        $this->author = $author;
+        $this->creator = $creator;
+    }
+
+    public function get_date( $format ) {
+        $this->requested_date_format = $format;
+        return $this->date;
+    }
+
+    public function get_author() {
+        return $this->author;
+    }
+
+    public function get_item_tags( $namespace, $tag ) {
+        if ( 'http://purl.org/dc/elements/1.1/' === $namespace && 'creator' === $tag && '' !== $this->creator ) {
+            return array( array( 'data' => $this->creator ) );
+        }
+        return array();
+    }
 }
 
 class Lunara_Journal_Control_Plane {
@@ -348,6 +389,25 @@ $exact_index = $exact_match_method->invoke(
 dispatch_runtime_assert( 1 === $exact_index, 'canonical source URL did not win exact image matching before keyword fallback', $failures );
 
 $feed_fetcher = new Lunara_Dispatch_Feed_Fetcher();
+$has_date_extractor = method_exists( $feed_fetcher, 'extract_source_published_at' );
+$has_author_extractor = method_exists( $feed_fetcher, 'extract_source_author' );
+dispatch_runtime_assert( $has_date_extractor, 'RSS publication date extractor is missing', $failures );
+dispatch_runtime_assert( $has_author_extractor, 'RSS source author extractor is missing', $failures );
+if ( $has_date_extractor && $has_author_extractor ) {
+    $date_method = new ReflectionMethod( $feed_fetcher, 'extract_source_published_at' );
+    $author_method = new ReflectionMethod( $feed_fetcher, 'extract_source_author' );
+    $feed_item = new Dispatch_Runtime_Feed_Item(
+        '2026-08-14T17:11:23+00:00',
+        new Dispatch_Runtime_Feed_Author( 'Garth Franklin' )
+    );
+    dispatch_runtime_assert( '2026-08-14T17:11:23+00:00' === $date_method->invoke( $feed_fetcher, $feed_item ), 'RSS publication date was not preserved as explicit-offset ISO-8601', $failures );
+    dispatch_runtime_assert( DATE_ATOM === $feed_item->requested_date_format, 'RSS date extraction did not request SimplePie DATE_ATOM output', $failures );
+    dispatch_runtime_assert( 'Garth Franklin' === $author_method->invoke( $feed_fetcher, $feed_item ), 'SimplePie source author was not preserved', $failures );
+    $creator_item = new Dispatch_Runtime_Feed_Item( '', null, '  Jane Doe  ' );
+    dispatch_runtime_assert( 'Jane Doe' === $author_method->invoke( $feed_fetcher, $creator_item ), 'Dublin Core creator fallback was not preserved', $failures );
+    dispatch_runtime_assert( '' === $date_method->invoke( $feed_fetcher, new stdClass() ), 'malformed feed item produced a publication date', $failures );
+    dispatch_runtime_assert( '' === $author_method->invoke( $feed_fetcher, new stdClass() ), 'malformed feed item produced a source author', $failures );
+}
 $feed_method = new ReflectionMethod( $feed_fetcher, 'fetch_bounded_feed' );
 $feed_args = $feed_method->invoke( $feed_fetcher, 'https://example.com/feed.xml' );
 dispatch_runtime_assert( Lunara_Dispatch_Feed_Fetcher::MAX_FEED_BYTES === $feed_args['limit_response_size'], 'feed response byte budget was not applied', $failures );

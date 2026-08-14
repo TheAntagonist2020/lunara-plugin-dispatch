@@ -39,9 +39,11 @@ $prompts = dispatch_contract_file($root, 'includes/class-prompts.php');
 $control = dispatch_contract_file($root, 'includes/class-control-plane-client.php');
 $bridge = dispatch_contract_file($root, 'includes/class-journal-ingest-bridge.php');
 $reader = dispatch_contract_file($root, 'includes/class-source-reader.php');
+$readme = dispatch_contract_file($root, 'README.md');
 
-dispatch_contract_contains($bootstrap, "Version:     3.2.5", 'plugin header is not 3.2.5', $failures);
-dispatch_contract_contains($bootstrap, "LUNARA_DISPATCH_VERSION', '3.2.5'", 'runtime version constant is not 3.2.5', $failures);
+dispatch_contract_contains($bootstrap, "Version:     3.2.6", 'plugin header is not 3.2.6', $failures);
+dispatch_contract_contains($bootstrap, "LUNARA_DISPATCH_VERSION', '3.2.6'", 'runtime version constant is not 3.2.6', $failures);
+dispatch_contract_contains($readme, 'Current baseline: `3.2.6`.', 'README baseline is not 3.2.6', $failures);
 dispatch_contract_contains($plugin, "lunara_journal_control_plane_activated", 'Control Plane activation is not consumed', $failures);
 dispatch_contract_contains($plugin, 'add_option(self::LOCK_KEY', 'worker lock is not atomically inserted', $failures);
 dispatch_contract_contains($plugin, 'AND option_value = %s', 'worker lock lacks compare-and-swap ownership', $failures);
@@ -66,6 +68,13 @@ dispatch_contract_contains($feed, 'image_source_verified', 'feed images are not 
 dispatch_contract_contains($feed, '$source_allows_images = !$image_blocked;', 'legacy source flags still disable all source-story images', $failures);
 dispatch_contract_contains($feed, 'resolve_source_story_image', 'existing Dispatch drafts cannot resolve their source-story image', $failures);
 dispatch_contract_contains($feed, 'article_open_graph', 'article Open Graph images are not identified as source-story leads', $failures);
+dispatch_contract_contains($feed, "'published_at'", 'RSS publication date is not carried into the source item payload', $failures);
+dispatch_contract_contains($feed, "'source_author'", 'RSS author is not carried into the source item payload', $failures);
+dispatch_contract_contains($feed, 'get_date(DATE_ATOM)', 'RSS publication date is not normalized through SimplePie', $failures);
+dispatch_contract_contains($feed, 'get_author()', 'RSS author is not read from SimplePie', $failures);
+dispatch_contract_contains($feed, 'LunaraDispatch/3.2.6', 'feed user agent is not release-aligned', $failures);
+dispatch_contract_contains($images, 'LunaraDispatch/3.2.6', 'image user agent is not release-aligned', $failures);
+dispatch_contract_contains($reader, 'LunaraDispatch/3.2.6', 'source-reader user agent is not release-aligned', $failures);
 dispatch_contract_contains($plugin, "class-source-reader.php", 'bounded source reader is not loaded by Dispatch', $failures);
 dispatch_contract_contains($plugin, "dispatch_source_items", 'IFTTT Source Radar signals are not merged into Dispatch', $failures);
 dispatch_contract_contains($plugin, "record_dispatch_source_outcome", 'terminal Source Radar outcomes are not returned to Foundation', $failures);
