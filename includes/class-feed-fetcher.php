@@ -90,6 +90,8 @@ class Lunara_Dispatch_Feed_Fetcher {
                 $image_url = $source_allows_images ? $this->extract_image_url($rss_item, $url, $image_origin) : '';
                 $image_credit = $source_allows_images ? $this->extract_image_credit($rss_item) : '';
                 $image_rights = $source_allows_images ? $this->extract_image_rights($rss_item) : array();
+                $published_at = $this->extract_source_published_at($rss_item);
+                $source_author = $this->extract_source_author($rss_item);
                 $image_source_verified = $source_allows_images && $this->is_source_story_image(
                     $image_url,
                     $image_origin
@@ -105,6 +107,8 @@ class Lunara_Dispatch_Feed_Fetcher {
                     'title'        => $this->truncate_text(wp_strip_all_tags((string) $rss_item->get_title()), 250),
                     'url'          => $url,
                     'description'  => $this->truncate_text(wp_strip_all_tags((string) $rss_item->get_description()), self::MAX_DESCRIPTION_CHARS),
+                    'published_at' => $published_at,
+                    'source_author' => $source_author,
                     'image_url'    => $image_url,
                     'image_credit' => $image_credit,
                     'image_origin' => $image_origin,
@@ -331,6 +335,57 @@ class Lunara_Dispatch_Feed_Fetcher {
         return '';
     }
 
+    /**
+     * Preserve the feed item's source publication time without another request.
+     *
+     * @param SimplePie_Item $item RSS item.
+     * @return string ISO-8601 date with an explicit offset, or an empty string.
+     */
+    private function extract_source_published_at($item) {
+        if (!is_object($item) || !method_exists($item, 'get_date')) {
+            return '';
+        }
+
+        $published = $item->get_date(DATE_ATOM);
+        return $published ? sanitize_text_field((string) $published) : '';
+    }
+
+    /**
+     * Preserve the article author independently from image-credit metadata.
+     *
+     * @param SimplePie_Item $item RSS item.
+     * @return string
+     */
+    private function extract_source_author($item) {
+        if (!is_object($item)) {
+            return '';
+        }
+
+        if (method_exists($item, 'get_author')) {
+            $author = $item->get_author();
+            if (is_object($author) && method_exists($author, 'get_name')) {
+                $name = $this->truncate_text($this->normalize_credit_text($author->get_name()), 250);
+                if ('' !== $name) {
+                    return $name;
+                }
+            }
+        }
+
+        if (method_exists($item, 'get_item_tags')) {
+            $creators = $item->get_item_tags('http://purl.org/dc/elements/1.1/', 'creator');
+            foreach (is_array($creators) ? $creators : array() as $creator) {
+                if (!empty($creator['data'])) {
+                    $name = $this->truncate_text($this->normalize_credit_text($creator['data']), 250);
+                    if ('' !== $name) {
+                        return $name;
+                    }
+                }
+            }
+        }
+
+        return '';
+    }
+
     private function extract_image_rights($item) {
         $license = '';
         $url = '';
@@ -454,7 +509,7 @@ class Lunara_Dispatch_Feed_Fetcher {
             'redirection' => 2,
             'reject_unsafe_urls' => true,
             'limit_response_size' => self::MAX_ARTICLE_BYTES,
-            'user-agent' => 'Mozilla/5.0 (compatible; LunaraDispatch/3.2.5; +https://lunarafilm.com)',
+            'user-agent' => 'Mozilla/5.0 (compatible; LunaraDispatch/3.2.6; +https://lunarafilm.com)',
         ));
 
         if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) !== 200) {

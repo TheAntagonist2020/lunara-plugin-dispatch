@@ -14,7 +14,13 @@ Dispatch aggregates film-news sources, routes eligible items through the Lunara 
 
 ## Version
 
-Current baseline: `3.2.5`.
+Current baseline: `3.2.6`.
+
+### 3.2.6 RSS source provenance
+
+- Preserves the publication timestamp already supplied by RSS or Atom feeds and passes it to Journal Foundation in explicit-offset ISO-8601 form.
+- Preserves the article author from SimplePie, with Dublin Core creator as a bounded fallback.
+- Adds no new page request, API dependency, or publication capability; Dispatch remains draft-only.
 
 ### 3.2.5 Cost-safe OpenAI and no-AI continuity
 

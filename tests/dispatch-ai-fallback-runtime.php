@@ -7,7 +7,7 @@
 $root = dirname( __DIR__ );
 define( 'ABSPATH', $root . DIRECTORY_SEPARATOR );
 define( 'LUNARA_DISPATCH_DIR', $root . DIRECTORY_SEPARATOR );
-define( 'LUNARA_DISPATCH_VERSION', '3.2.5' );
+define( 'LUNARA_DISPATCH_VERSION', '3.2.6' );
 define( 'MINUTE_IN_SECONDS', 60 );
 define( 'HOUR_IN_SECONDS', 3600 );
 
