@@ -8,13 +8,23 @@ Dispatch aggregates film-news sources, routes eligible items through the Lunara 
 
 ## Source Locations
 
-- Local source: `G:\lunara-backups\work\lunara-dispatch`
+- Local source: `C:\Users\silve_i21do49\OneDrive\Desktop\New folder\01_ACTIVE_PROJECTS\lunara-dispatch-first-draft-voice-20260801`
 - Live plugin: `/home/151589083/htdocs/wp-content/plugins/lunara-dispatch`
 - Continuity workspace: `C:\Users\silve_i21do49\OneDrive\Desktop\New folder`
 
 ## Version
 
-Current baseline: `3.2.4`.
+Current baseline: `3.2.5`.
+
+### 3.2.5 Cost-safe OpenAI and no-AI continuity
+
+- Moves OpenAI generation to the Responses API with `store: false`, no reasoning overhead, low verbosity, an 18,000-character input ceiling, and a 2,200-token output ceiling.
+- Enforces a cost-controlled model allowlist and defaults stale or frontier-priced configuration to `gpt-5.4-mini`.
+- Records requested/effective model, token usage, and a per-run cost estimate without storing secret values.
+- Classifies billing, authentication, and rate-limit failures distinctly.
+- Creates clearly marked, four-paragraph source-packet drafts when AI is unavailable instead of allowing billing or provider failure to stop the Journal desk.
+- Preserves canonical source URL, source date, idempotency, draft-only status, original image handling, and explicit needs-review state through the existing Journal Foundation contract.
+- Keeps the normal editorial quality gate unchanged; only internally marked source packets use the narrow fallback contract.
 
 ### 3.2.4 Source Radar full-context bridge
 

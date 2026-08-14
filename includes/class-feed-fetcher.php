@@ -454,7 +454,7 @@ class Lunara_Dispatch_Feed_Fetcher {
             'redirection' => 2,
             'reject_unsafe_urls' => true,
             'limit_response_size' => self::MAX_ARTICLE_BYTES,
-            'user-agent' => 'Mozilla/5.0 (compatible; LunaraDispatch/3.2.4; +https://lunarafilm.com)',
+            'user-agent' => 'Mozilla/5.0 (compatible; LunaraDispatch/3.2.5; +https://lunarafilm.com)',
         ));
 
         if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) !== 200) {

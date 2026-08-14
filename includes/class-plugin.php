@@ -20,6 +20,7 @@ class Lunara_Dispatch_Plugin {
     const HISTORY_LIMIT = 20;
     const LOCK_TTL = 20 * MINUTE_IN_SECONDS;
     const SKIP_MARKER = 'LUNARA_SKIP';
+    const MAX_ITEMS_PER_RUN = 3;
 
     /** @var Lunara_Dispatch_Plugin */
     private static $instance = null;
@@ -61,6 +62,7 @@ class Lunara_Dispatch_Plugin {
             require_once LUNARA_DISPATCH_DIR . 'includes/class-feed-fetcher.php';
             require_once LUNARA_DISPATCH_DIR . 'includes/class-ai-client.php';
             require_once LUNARA_DISPATCH_DIR . 'includes/class-image-handler.php';
+            require_once LUNARA_DISPATCH_DIR . 'includes/class-source-packet-builder.php';
             require_once LUNARA_DISPATCH_DIR . 'includes/class-post-builder.php';
             $this->feed_fetcher  = new Lunara_Dispatch_Feed_Fetcher();
             $this->ai_client     = new Lunara_Dispatch_AI_Client();
@@ -560,6 +562,10 @@ class Lunara_Dispatch_Plugin {
             $fetched      = $this->feed_fetcher->fetch_all();
             $radar_merge  = $this->merge_source_radar_items( $fetched['items'] );
             $items        = $radar_merge['items'];
+            $deferred_source_items = max(0, count($items) - self::MAX_ITEMS_PER_RUN);
+            if ($deferred_source_items > 0) {
+                $items = array_slice($items, 0, self::MAX_ITEMS_PER_RUN);
+            }
             $skipped      = $fetched['skipped_duplicates'] + count( $radar_merge['duplicate_signal_ids'] );
             $errors       = $fetched['errors'];
             $context_data = array(
@@ -568,6 +574,7 @@ class Lunara_Dispatch_Plugin {
                 'source_context_cache_hits' => 0,
                 'source_context_errors'     => array(),
                 'source_radar_items'        => count( $radar_merge['accepted_signal_ids'] ),
+                'deferred_source_items'     => $deferred_source_items,
             );
             if (!$this->heartbeat_lock($lock_owner)) {
                 return $this->result(false, 'Dispatch lost worker-lock ownership after feed collection and stopped before generation.', array(
@@ -600,6 +607,7 @@ class Lunara_Dispatch_Plugin {
                 'source_context_cache_hits' => (int) $hydrated['cache_hits'],
                 'source_context_errors'     => $hydrated['errors'],
                 'source_radar_items'        => count( $radar_merge['accepted_signal_ids'] ),
+                'deferred_source_items'     => $deferred_source_items,
             );
             if (!$this->heartbeat_lock($lock_owner)) {
                 return $this->result(false, 'Dispatch lost worker-lock ownership after source-context retrieval and stopped before generation.', array_merge($context_data, array(
@@ -637,7 +645,25 @@ class Lunara_Dispatch_Plugin {
             }
             $news_data = implode("\n", $lines);
 
+            $provider = class_exists('Lunara_Dispatch_Control_Plane_Client')
+                ? Lunara_Dispatch_Control_Plane_Client::provider()
+                : sanitize_key(get_option('lunara_dispatch_provider', 'openai'));
+            $runtime_config = class_exists('Lunara_Dispatch_Control_Plane_Client')
+                ? Lunara_Dispatch_Control_Plane_Client::runtime_config()
+                : array();
+            $generation_context = array(
+                'provider'       => $provider,
+                'model'          => class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::model_for_provider($provider, '') : '',
+                'config_version' => sanitize_text_field((string) ($runtime_config['config_version'] ?? '')),
+                'prompt_version' => 'journal-' . sanitize_text_field((string) ($runtime_config['config_version'] ?? '')),
+                'items'          => $items,
+                'run_id'         => $this->current_run_id,
+            );
+            $ai_fallback_used = false;
+            $ai_error_code    = '';
+            $ai_error_message = '';
             $generated = $this->ai_client->generate($news_data);
+            $ai_usage = method_exists($this->ai_client, 'get_last_usage') ? $this->ai_client->get_last_usage() : array();
             if (!$this->heartbeat_lock($lock_owner)) {
                 return $this->result(false, 'Dispatch lost worker-lock ownership after generation and stopped before creating drafts.', array_merge($context_data, array(
                     'retry_required' => true,
@@ -646,12 +672,40 @@ class Lunara_Dispatch_Plugin {
                 )));
             }
             if (is_wp_error($generated)) {
-                $msg = $generated->get_error_message();
-                error_log('Lunara Dispatch: ' . $msg);
-                return $this->result(false, $msg, array_merge($context_data, array(
-                    'feed_errors'        => $errors,
-                    'skipped_duplicates' => $skipped,
-                )));
+                $ai_error_code    = sanitize_key((string) $generated->get_error_code());
+                $ai_error_message = sanitize_text_field((string) $generated->get_error_message());
+                error_log('Lunara Dispatch: ' . $ai_error_message . ' Creating source-packet drafts instead.');
+                $generated = class_exists('Lunara_Dispatch_Source_Packet_Builder')
+                    ? Lunara_Dispatch_Source_Packet_Builder::build_html($items)
+                    : '';
+                if ('' === trim((string) $generated)) {
+                    return $this->result(false, $ai_error_message, array_merge($context_data, array(
+                        'feed_errors'        => $errors,
+                        'skipped_duplicates' => $skipped,
+                        'retry_required'     => true,
+                    )));
+                }
+
+                $ai_fallback_used = true;
+                $generation_context['provider']           = 'source_packet';
+                $generation_context['model']              = 'none';
+                $generation_context['prompt_version']     = 'source-packet-v1';
+                $generation_context['source_packet_mode'] = true;
+                $generation_context['ai_error_code']      = $ai_error_code;
+                $context_data = array_merge($context_data, array(
+                    'ai_fallback_used' => true,
+                    'ai_error_code'    => $ai_error_code,
+                    'ai_usage'         => $ai_usage,
+                ));
+            } else {
+                if (!empty($ai_usage['effective_model'])) {
+                    $generation_context['model'] = sanitize_text_field((string) $ai_usage['effective_model']);
+                }
+                $context_data = array_merge($context_data, array(
+                    'ai_fallback_used' => false,
+                    'ai_error_code'    => '',
+                    'ai_usage'         => $ai_usage,
+                ));
             }
 
             if ($this->generation_requested_skip($generated)) {
@@ -690,14 +744,7 @@ class Lunara_Dispatch_Plugin {
 				array(),
 				$post_type,
 				$post_status,
-				array(
-					'provider' => class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::provider() : sanitize_key(get_option('lunara_dispatch_provider', 'openai')),
-					'model'    => class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::model_for_provider(class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::provider() : 'openai', '' ) : '',
-					'config_version' => class_exists('Lunara_Dispatch_Control_Plane_Client') ? sanitize_text_field((string) (Lunara_Dispatch_Control_Plane_Client::runtime_config()['config_version'] ?? '')) : '',
-					'prompt_version' => class_exists('Lunara_Dispatch_Control_Plane_Client') ? 'journal-' . sanitize_text_field((string) (Lunara_Dispatch_Control_Plane_Client::runtime_config()['config_version'] ?? '')) : '',
-					'items'    => $items,
-					'run_id'   => $this->current_run_id,
-				)
+				$generation_context
 			);
 			$created_with_featured_image = 0;
 			$created_without_featured_image = count($created_post_ids);
@@ -833,15 +880,28 @@ class Lunara_Dispatch_Plugin {
                 $this->feed_fetcher->mark_seen($items);
             }
 
-            return $this->result(true, sprintf(
-                'Created %d %s post(s) from %d source items across %d feed(s). Featured images attached to %d/%d draft(s).',
-                count($created_post_ids),
-                $this->get_status_label($post_status),
-                count($items),
-                count(array_unique(array_column($items, 'source_label'))),
-                $created_with_featured_image,
-                count($created_post_ids)
-            ), array_merge($context_data, array(
+            $result_message = $ai_fallback_used
+                ? sprintf(
+                    'OpenAI was unavailable, so Dispatch created %d safe source-packet draft(s) from %d source item(s). Featured images attached to %d/%d draft(s); editorial review remains required.',
+                    count($created_post_ids),
+                    count($items),
+                    $created_with_featured_image,
+                    count($created_post_ids)
+                )
+                : sprintf(
+                    'Created %d %s post(s) from %d source items across %d feed(s). Featured images attached to %d/%d draft(s).',
+                    count($created_post_ids),
+                    $this->get_status_label($post_status),
+                    count($items),
+                    count(array_unique(array_column($items, 'source_label'))),
+                    $created_with_featured_image,
+                    count($created_post_ids)
+                );
+            if ($deferred_source_items > 0) {
+                $result_message .= sprintf(' %d additional source item(s) remain eligible for the next run.', $deferred_source_items);
+            }
+
+            return $this->result(true, $result_message, array_merge($context_data, array(
                 'post_ids'           => $created_post_ids,
 				'created'            => count($created_post_ids),
 				'imported'           => count($items),
@@ -1060,6 +1120,20 @@ class Lunara_Dispatch_Plugin {
 			'source_context_cache_hits' => isset($payload['source_context_cache_hits']) ? (int) $payload['source_context_cache_hits'] : 0,
 			'source_context_errors' => isset($payload['source_context_errors']) && is_array($payload['source_context_errors']) ? array_slice($payload['source_context_errors'], 0, 20) : array(),
 			'source_radar_items' => isset($payload['source_radar_items']) ? (int) $payload['source_radar_items'] : 0,
+			'deferred_source_items' => isset($payload['deferred_source_items']) ? (int) $payload['deferred_source_items'] : 0,
+			'ai_fallback_used' => !empty($payload['ai_fallback_used']),
+			'ai_error_code' => isset($payload['ai_error_code']) ? sanitize_key((string) $payload['ai_error_code']) : '',
+			'ai_usage' => isset($payload['ai_usage']) && is_array($payload['ai_usage']) ? array_intersect_key($payload['ai_usage'], array_flip(array(
+				'provider',
+				'requested_model',
+				'effective_model',
+				'max_output_tokens',
+				'input_tokens',
+				'cached_input_tokens',
+				'output_tokens',
+				'estimated_cost_usd',
+				'response_id',
+			))) : array(),
 		);
 
         update_option(self::REPORT_OPTION, $report, false);

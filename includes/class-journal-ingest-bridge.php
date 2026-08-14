@@ -45,7 +45,9 @@ final class Lunara_Dispatch_Journal_Ingest_Bridge {
             }
         }
 
-        $source_keys[] = 'section:' . max( 0, (int) $section_index );
+		$source_keys[] = ! empty( $run_context['source_packet_mode'] )
+			? 'source-packet'
+			: 'section:' . max( 0, (int) $section_index );
         sort( $source_keys, SORT_STRING );
         $idempotency_key = 'lunara-dispatch-v1-' . hash( 'sha256', implode( '|', array_values( array_unique( $source_keys ) ) ) );
         $section = ! empty( $run_context['section'] ) ? sanitize_text_field( (string) $run_context['section'] ) : 'Signal';

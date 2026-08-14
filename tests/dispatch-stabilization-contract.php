@@ -40,8 +40,8 @@ $control = dispatch_contract_file($root, 'includes/class-control-plane-client.ph
 $bridge = dispatch_contract_file($root, 'includes/class-journal-ingest-bridge.php');
 $reader = dispatch_contract_file($root, 'includes/class-source-reader.php');
 
-dispatch_contract_contains($bootstrap, "Version:     3.2.4", 'plugin header is not 3.2.4', $failures);
-dispatch_contract_contains($bootstrap, "LUNARA_DISPATCH_VERSION', '3.2.4'", 'runtime version constant is not 3.2.4', $failures);
+dispatch_contract_contains($bootstrap, "Version:     3.2.5", 'plugin header is not 3.2.5', $failures);
+dispatch_contract_contains($bootstrap, "LUNARA_DISPATCH_VERSION', '3.2.5'", 'runtime version constant is not 3.2.5', $failures);
 dispatch_contract_contains($plugin, "lunara_journal_control_plane_activated", 'Control Plane activation is not consumed', $failures);
 dispatch_contract_contains($plugin, 'add_option(self::LOCK_KEY', 'worker lock is not atomically inserted', $failures);
 dispatch_contract_contains($plugin, 'AND option_value = %s', 'worker lock lacks compare-and-swap ownership', $failures);
