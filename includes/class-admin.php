@@ -59,7 +59,7 @@ class Lunara_Dispatch_Admin {
         ));
         register_setting('lunara_dispatch_options', 'lunara_dispatch_max_tokens', array(
             'type' => 'integer',
-            'sanitize_callback' => static function ($value) { return max(1024, min(16000, (int) $value)); },
+            'sanitize_callback' => static function ($value) { return max(512, min(2200, (int) $value)); },
         ));
 
         foreach (array('claude', 'openai', 'gemini', 'grok') as $provider) {
@@ -209,6 +209,12 @@ class Lunara_Dispatch_Admin {
         $last_item_images_sideloaded = isset($last_report['item_images_sideloaded']) ? (int) $last_report['item_images_sideloaded'] : 0;
         $last_section_images_matched = isset($last_report['section_images_matched']) ? (int) $last_report['section_images_matched'] : 0;
         $last_created_with_featured_image = isset($last_report['created_with_featured_image']) ? (int) $last_report['created_with_featured_image'] : 0;
+        $last_ai_fallback = !empty($last_report['ai_fallback_used']);
+        $last_ai_usage = isset($last_report['ai_usage']) && is_array($last_report['ai_usage']) ? $last_report['ai_usage'] : array();
+        $last_ai_model = !empty($last_ai_usage['effective_model']) ? (string) $last_ai_usage['effective_model'] : 'not recorded';
+        $last_ai_cost = isset($last_ai_usage['estimated_cost_usd']) && null !== $last_ai_usage['estimated_cost_usd']
+            ? '$' . number_format((float) $last_ai_usage['estimated_cost_usd'], 4)
+            : 'not recorded';
         $status_label = method_exists($this->plugin, 'get_status_label') ? $this->plugin->get_status_label($post_status) : $post_status;
         $system_prompt = class_exists('Lunara_Dispatch_Prompts') ? Lunara_Dispatch_Prompts::system_prompt() : '';
         $prompt_override = get_option('lunara_dispatch_system_prompt_override', '');
@@ -252,6 +258,7 @@ class Lunara_Dispatch_Admin {
                 <?php endif; ?>
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Source-image opt-outs:</strong> <?php echo esc_html((string) $last_image_blocked_sources); ?></p>
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Last source-story image path:</strong> <?php echo esc_html((string) $last_source_items_with_image); ?> discovered / <?php echo esc_html((string) $last_item_images_sideloaded); ?> imported / <?php echo esc_html((string) $last_section_images_matched); ?> matched / <?php echo esc_html((string) $last_created_with_featured_image); ?> attached.</p>
+                <p style="margin:0 0 8px; color:#cccccc;"><strong>Last AI path:</strong> <?php echo esc_html($last_ai_fallback ? 'Source-packet fallback (no AI charge)' : $last_ai_model); ?>; estimated request cost <?php echo esc_html($last_ai_fallback ? '$0.0000' : $last_ai_cost); ?>.</p>
                 <p style="margin:0; color:#cccccc;"><strong>Last run note:</strong> <?php echo esc_html($last_message); ?></p>
             </div>
 
@@ -300,13 +307,13 @@ class Lunara_Dispatch_Admin {
                     }
                     $this->row('Active Provider', '<select name="lunara_dispatch_provider" style="' . $this->input_style(300) . '">' . $opts . '</select>');
 
-                    $this->row('Max Output Tokens', '<input type="number" min="1024" max="16000" name="lunara_dispatch_max_tokens" value="' . esc_attr(get_option('lunara_dispatch_max_tokens', 4096)) . '" style="' . $this->input_style(120) . '" />');
+                    $this->row('Max Output Tokens', '<input type="number" min="512" max="2200" name="lunara_dispatch_max_tokens" value="' . esc_attr(get_option('lunara_dispatch_max_tokens', 2200)) . '" style="' . $this->input_style(120) . '" /><p style="color:#cccccc;font-size:13px;margin:6px 0 0;">OpenAI is hard-capped at 2,200 output tokens per run. A billing or provider failure creates source-packet drafts instead of stopping the desk.</p>');
                     ?>
                 </table>
 
                 <?php
                 $this->provider_block('Claude (Anthropic)', 'claude', 'claude-opus-4-5', 'sk-ant-api03-...');
-                $this->provider_block('OpenAI (ChatGPT)',    'openai', 'gpt-4o',          'sk-proj-...');
+                $this->provider_block('OpenAI (ChatGPT)',    'openai', 'gpt-5.4-mini',    'sk-proj-...');
                 $this->provider_block('Google Gemini',       'gemini', 'gemini-2.5-pro',  'AIza...');
                 $this->provider_block('xAI Grok',            'grok',   'grok-4',          'xai-...');
                 ?>

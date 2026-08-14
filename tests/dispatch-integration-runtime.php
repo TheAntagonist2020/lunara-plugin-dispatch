@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     define( 'ABSPATH', $root . DIRECTORY_SEPARATOR );
 }
 if ( ! defined( 'LUNARA_DISPATCH_VERSION' ) ) {
-    define( 'LUNARA_DISPATCH_VERSION', '3.2.4' );
+    define( 'LUNARA_DISPATCH_VERSION', '3.2.5' );
 }
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
     define( 'HOUR_IN_SECONDS', 3600 );
@@ -240,6 +240,21 @@ $next_section_payload = Lunara_Dispatch_Journal_Ingest_Bridge::build_payload(
     1
 );
 dispatch_runtime_assert( $payload['idempotency_key'] !== $next_section_payload['idempotency_key'], 'different generated sections using the same source collapsed onto one idempotency key', $failures );
+$source_packet_context = $context;
+$source_packet_context['source_packet_mode'] = true;
+$source_packet_first = Lunara_Dispatch_Journal_Ingest_Bridge::build_payload(
+    'A Film Finds Distribution',
+    '<p>A deterministic source packet.</p>',
+    $source_packet_context,
+    0
+);
+$source_packet_reordered = Lunara_Dispatch_Journal_Ingest_Bridge::build_payload(
+    'A Film Finds Distribution',
+    '<p>A deterministic source packet.</p>',
+    $source_packet_context,
+    7
+);
+dispatch_runtime_assert( $source_packet_first['idempotency_key'] === $source_packet_reordered['idempotency_key'], 'source-packet retry changed idempotency when batch order changed', $failures );
 dispatch_runtime_assert( ! isset( $payload['status'] ) && ! isset( $payload['post_status'] ), 'payload attempts to choose a post status', $failures );
 dispatch_runtime_assert( isset( $payload['featured_media'] ) && 0 === $payload['featured_media'], 'payload featured_media default is not explicit', $failures );
 dispatch_runtime_assert( 'Industry' === $payload['classification']['section'], 'classification section was not preserved', $failures );

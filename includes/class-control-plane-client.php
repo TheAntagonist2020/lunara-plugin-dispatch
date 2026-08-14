@@ -47,7 +47,7 @@ final class Lunara_Dispatch_Control_Plane_Client {
             'post_status'      => 'draft',
             'provider'         => 'openai',
             'models'           => array(),
-            'max_tokens'       => 4096,
+            'max_tokens'       => 2200,
             'sources'          => array(),
             'compiled_system_prompt' => '',
             'compiled_user_directive_prompt' => '',
@@ -69,12 +69,12 @@ final class Lunara_Dispatch_Control_Plane_Client {
             'post_status'      => 'draft',
             'provider'         => $provider,
             'models'           => array(
-                'openai' => sanitize_text_field( (string) get_option( 'lunara_dispatch_openai_model', 'gpt-4o' ) ),
+                'openai' => sanitize_text_field( (string) get_option( 'lunara_dispatch_openai_model', 'gpt-5.4-mini' ) ),
                 'claude' => sanitize_text_field( (string) get_option( 'lunara_dispatch_claude_model', 'claude-opus-4-5' ) ),
                 'gemini' => sanitize_text_field( (string) get_option( 'lunara_dispatch_gemini_model', 'gemini-2.5-pro' ) ),
                 'grok'   => sanitize_text_field( (string) get_option( 'lunara_dispatch_grok_model', 'grok-4' ) ),
             ),
-            'max_tokens' => max( 1024, min( 16000, (int) get_option( 'lunara_dispatch_max_tokens', 4096 ) ) ),
+            'max_tokens' => max( 512, min( 2200, (int) get_option( 'lunara_dispatch_max_tokens', 2200 ) ) ),
             'sources'    => class_exists( 'Lunara_Dispatch_Sources' ) ? Lunara_Dispatch_Sources::all() : array(),
             'compiled_system_prompt' => class_exists( 'Lunara_Dispatch_Prompts' ) ? Lunara_Dispatch_Prompts::legacy_system_prompt() : '',
             'compiled_user_directive_prompt' => class_exists( 'Lunara_Dispatch_Prompts' ) ? Lunara_Dispatch_Prompts::legacy_user_directive_prompt() : '',
@@ -98,7 +98,7 @@ final class Lunara_Dispatch_Control_Plane_Client {
 
     public static function max_tokens() {
         $runtime = self::runtime_config();
-        return max( 1024, min( 16000, (int) ( $runtime['max_tokens'] ?? 4096 ) ) );
+        return max( 512, min( 2200, (int) ( $runtime['max_tokens'] ?? 2200 ) ) );
     }
 
     public static function schedule() {
