@@ -407,6 +407,9 @@ if ( $has_date_extractor && $has_author_extractor ) {
     dispatch_runtime_assert( '2026-08-14T17:11:23+00:00' === $date_method->invoke( $feed_fetcher, $feed_item ), 'RSS publication date was not preserved as explicit-offset ISO-8601', $failures );
     dispatch_runtime_assert( DATE_ATOM === $feed_item->requested_date_format, 'RSS date extraction did not request SimplePie DATE_ATOM output', $failures );
     dispatch_runtime_assert( 'Garth Franklin' === $author_method->invoke( $feed_fetcher, $feed_item ), 'SimplePie source author was not preserved', $failures );
+    $long_author = str_repeat( 'A', 400 );
+    $bounded_author = $author_method->invoke( $feed_fetcher, new Dispatch_Runtime_Feed_Item( '', new Dispatch_Runtime_Feed_Author( $long_author ) ) );
+    dispatch_runtime_assert( 250 === strlen( $bounded_author ), 'RSS source author was not capped at 250 characters', $failures );
     $creator_item = new Dispatch_Runtime_Feed_Item( '', null, '  Jane Doe  ' );
     dispatch_runtime_assert( 'Jane Doe' === $author_method->invoke( $feed_fetcher, $creator_item ), 'Dublin Core creator fallback was not preserved', $failures );
     dispatch_runtime_assert( '' === $date_method->invoke( $feed_fetcher, new stdClass() ), 'malformed feed item produced a publication date', $failures );

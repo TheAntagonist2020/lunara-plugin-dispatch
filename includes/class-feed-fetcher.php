@@ -364,7 +364,7 @@ class Lunara_Dispatch_Feed_Fetcher {
         if (method_exists($item, 'get_author')) {
             $author = $item->get_author();
             if (is_object($author) && method_exists($author, 'get_name')) {
-                $name = $this->normalize_credit_text($author->get_name());
+                $name = $this->truncate_text($this->normalize_credit_text($author->get_name()), 250);
                 if ('' !== $name) {
                     return $name;
                 }
@@ -375,7 +375,7 @@ class Lunara_Dispatch_Feed_Fetcher {
             $creators = $item->get_item_tags('http://purl.org/dc/elements/1.1/', 'creator');
             foreach (is_array($creators) ? $creators : array() as $creator) {
                 if (!empty($creator['data'])) {
-                    $name = $this->normalize_credit_text($creator['data']);
+                    $name = $this->truncate_text($this->normalize_credit_text($creator['data']), 250);
                     if ('' !== $name) {
                         return $name;
                     }
