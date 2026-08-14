@@ -254,6 +254,8 @@ $context = array(
             'url' => 'https://example.com/story',
             'fingerprint' => 'source-fingerprint-1',
             'source_label' => 'Example Trade',
+            'published_at' => '2026-08-14T17:11:23+00:00',
+            'source_author' => 'Garth Franklin',
         ),
     ),
 );
@@ -301,6 +303,8 @@ dispatch_runtime_assert( isset( $payload['featured_media'] ) && 0 === $payload['
 dispatch_runtime_assert( 'Industry' === $payload['classification']['section'], 'classification section was not preserved', $failures );
 dispatch_runtime_assert( 'openai' === $payload['provenance']['provider'], 'provenance provider was not preserved', $failures );
 dispatch_runtime_assert( 1 === count( $payload['source_items'] ), 'payload did not select one canonical source item', $failures );
+dispatch_runtime_assert( '2026-08-14T17:11:23+00:00' === $payload['source_items'][0]['source_published_at'], 'feed publication date did not reach the Foundation source payload', $failures );
+dispatch_runtime_assert( 'Garth Franklin' === $payload['source_items'][0]['source_author'], 'feed author did not reach the Foundation source payload', $failures );
 $untraceable_payload = $payload;
 $untraceable_payload['source_items'] = array();
 $untraceable = Lunara_Dispatch_Journal_Ingest_Bridge::ingest_payload( $untraceable_payload );
