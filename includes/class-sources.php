@@ -42,6 +42,9 @@ class Lunara_Dispatch_Sources {
     }
 
     public static function install_defaults_if_empty() {
+        if ( self::foundation_manages_sources() ) {
+            return;
+        }
         $existing = get_option(self::OPTION, null);
         if (!is_array($existing) || empty($existing)) {
             update_option(self::OPTION, self::defaults(), false);
@@ -52,12 +55,23 @@ class Lunara_Dispatch_Sources {
      * Get all sources (always returns array of normalized records).
      */
     public static function all() {
-        if ( class_exists( 'Lunara_Dispatch_Control_Plane_Client' ) && method_exists( 'Lunara_Dispatch_Control_Plane_Client', 'available' ) && Lunara_Dispatch_Control_Plane_Client::available() ) {
+        if ( self::foundation_manages_sources() ) {
             $runtime = Lunara_Dispatch_Control_Plane_Client::runtime_config();
-            if ( ! empty( $runtime['sources'] ) && is_array( $runtime['sources'] ) ) {
+            if ( isset( $runtime['sources'] ) && is_array( $runtime['sources'] ) ) {
                 return self::normalize_runtime_sources( $runtime['sources'] );
             }
+            return array();
         }
+        return self::legacy_all();
+    }
+
+    /**
+     * Read the preserved Dispatch-owned recovery option without consulting
+     * Foundation. This is also the value returned when a managed write is
+     * rejected, so callers cannot mistake the Foundation list for a saved
+     * legacy mutation.
+     */
+    public static function legacy_all() {
         $raw = get_option(self::OPTION, array());
         if (!is_array($raw)) {
             return array();
@@ -130,6 +144,9 @@ class Lunara_Dispatch_Sources {
      * Replace the entire source list. Caller is responsible for sanitization.
      */
     public static function save_all(array $sources) {
+        if ( self::foundation_manages_sources() ) {
+            return self::legacy_all();
+        }
         $clean = array();
         $seen_ids = array();
         foreach ($sources as $row) {
@@ -162,5 +179,16 @@ class Lunara_Dispatch_Sources {
         }
         update_option(self::OPTION, $clean, false);
         return $clean;
+    }
+
+    /**
+     * A protocol-compatible Control Plane is the sole source owner. Mere
+     * class presence is insufficient because incompatible Foundation builds
+     * must leave the legacy recovery editor usable.
+     */
+    private static function foundation_manages_sources() {
+        return class_exists( 'Lunara_Dispatch_Control_Plane_Client' )
+            && method_exists( 'Lunara_Dispatch_Control_Plane_Client', 'available' )
+            && Lunara_Dispatch_Control_Plane_Client::available();
     }
 }

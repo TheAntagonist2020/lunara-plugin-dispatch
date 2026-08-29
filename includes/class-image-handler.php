@@ -107,7 +107,7 @@ class Lunara_Dispatch_Image_Handler {
 			'redirection' => 2,
 			'reject_unsafe_urls' => true,
 			'limit_response_size' => self::MAX_IMAGE_BYTES,
-			'user-agent' => 'Mozilla/5.0 (compatible; LunaraDispatch/3.2.6; +https://lunarafilm.com)',
+			'user-agent' => 'Mozilla/5.0 (compatible; LunaraDispatch/3.2.7; +https://lunarafilm.com)',
 			'stream' => true,
 			'filename' => $tmp,
 		) );

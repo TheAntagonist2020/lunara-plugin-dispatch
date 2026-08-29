@@ -41,25 +41,19 @@ class Lunara_Dispatch_Admin {
     public function register_settings() {
         register_setting('lunara_dispatch_options', 'lunara_dispatch_enabled', array(
             'type' => 'boolean',
-            'sanitize_callback' => static function ($value) { return empty($value) ? 0 : 1; },
+            'sanitize_callback' => array($this, 'sanitize_enabled'),
         ));
         register_setting('lunara_dispatch_options', 'lunara_dispatch_schedule', array(
             'type' => 'string',
-            'sanitize_callback' => static function ($value) {
-                $value = sanitize_key((string) $value);
-                return in_array($value, array('daily', 'twice_daily', 'every_4_hours', 'every_2_hours'), true) ? $value : 'daily';
-            },
+            'sanitize_callback' => array($this, 'sanitize_schedule'),
         ));
         register_setting('lunara_dispatch_options', 'lunara_dispatch_provider', array(
             'type' => 'string',
-            'sanitize_callback' => static function ($value) {
-                $value = sanitize_key((string) $value);
-                return in_array($value, array('openai', 'claude', 'gemini', 'grok'), true) ? $value : 'openai';
-            },
+            'sanitize_callback' => array($this, 'sanitize_provider'),
         ));
         register_setting('lunara_dispatch_options', 'lunara_dispatch_max_tokens', array(
             'type' => 'integer',
-            'sanitize_callback' => static function ($value) { return max(512, min(2200, (int) $value)); },
+            'sanitize_callback' => array($this, 'sanitize_max_tokens'),
         ));
 
         foreach (array('claude', 'openai', 'gemini', 'grok') as $provider) {
@@ -71,9 +65,12 @@ class Lunara_Dispatch_Admin {
                     return '' === $value ? (string) get_option($key_option, '') : sanitize_text_field($value);
                 },
             ));
-            register_setting('lunara_dispatch_options', 'lunara_dispatch_' . $provider . '_model', array(
+            $model_option = 'lunara_dispatch_' . $provider . '_model';
+            register_setting('lunara_dispatch_options', $model_option, array(
                 'type' => 'string',
-                'sanitize_callback' => 'sanitize_text_field',
+                'sanitize_callback' => function ($value) use ($model_option) {
+                    return $this->sanitize_model($model_option, $value);
+                },
             ));
         }
 
@@ -90,7 +87,61 @@ class Lunara_Dispatch_Admin {
         ));
     }
 
+    public function sanitize_enabled($value) {
+        return $this->sanitize_foundation_owned_option(
+            'lunara_dispatch_enabled',
+            $value,
+            static function ($candidate) { return empty($candidate) ? 0 : 1; },
+            0
+        );
+    }
+
+    public function sanitize_schedule($value) {
+        return $this->sanitize_foundation_owned_option(
+            'lunara_dispatch_schedule',
+            $value,
+            static function ($candidate) {
+                $candidate = sanitize_key((string) $candidate);
+                return in_array($candidate, array('daily', 'twice_daily', 'every_4_hours', 'every_2_hours'), true) ? $candidate : 'daily';
+            },
+            'daily'
+        );
+    }
+
+    public function sanitize_provider($value) {
+        return $this->sanitize_foundation_owned_option(
+            'lunara_dispatch_provider',
+            $value,
+            static function ($candidate) {
+                $candidate = sanitize_key((string) $candidate);
+                return in_array($candidate, array('openai', 'claude', 'gemini', 'grok'), true) ? $candidate : 'openai';
+            },
+            'openai'
+        );
+    }
+
+    public function sanitize_max_tokens($value) {
+        return $this->sanitize_foundation_owned_option(
+            'lunara_dispatch_max_tokens',
+            $value,
+            static function ($candidate) { return max(512, min(2200, (int) $candidate)); },
+            2200
+        );
+    }
+
+    public function sanitize_model($option, $value) {
+        return $this->sanitize_foundation_owned_option(
+            $option,
+            $value,
+            'sanitize_text_field',
+            ''
+        );
+    }
+
     public function sanitize_voice_refinement($value) {
+        if ($this->foundation_ready()) {
+            return (string) get_option('lunara_dispatch_voice_refinement', '');
+        }
         $value = wp_unslash((string) $value);
         $value = wp_strip_all_tags($value);
         $value = preg_replace('/[ \t]+/', ' ', $value);
@@ -100,12 +151,28 @@ class Lunara_Dispatch_Admin {
     }
 
     public function sanitize_prompt_override($value) {
+        if ($this->foundation_ready()) {
+            return (string) get_option('lunara_dispatch_system_prompt_override', '');
+        }
         $value = wp_unslash((string) $value);
         $value = wp_strip_all_tags($value);
         $value = preg_replace('/[ \t]+/', ' ', $value);
         $value = preg_replace('/\R{3,}/', "\n\n", $value);
 
         return trim((string) $value);
+    }
+
+    private function sanitize_foundation_owned_option($option, $value, $sanitizer, $default) {
+        if ($this->foundation_ready()) {
+            return get_option($option, $default);
+        }
+        return call_user_func($sanitizer, $value);
+    }
+
+    private function foundation_ready() {
+        return class_exists('Lunara_Dispatch_Control_Plane_Client')
+            && method_exists('Lunara_Dispatch_Control_Plane_Client', 'available')
+            && Lunara_Dispatch_Control_Plane_Client::available();
     }
 
     /**
@@ -123,7 +190,7 @@ class Lunara_Dispatch_Admin {
             return;
         }
 
-        if ( class_exists( 'Lunara_Dispatch_Control_Plane_Client' ) && Lunara_Dispatch_Control_Plane_Client::available() ) {
+        if ( $this->foundation_ready() ) {
             wp_safe_redirect( add_query_arg( 'control-plane-managed', '1', admin_url( 'options-general.php?page=lunara-dispatch-settings' ) ) );
             exit;
         }
@@ -183,13 +250,15 @@ class Lunara_Dispatch_Admin {
 
     public function settings_page() {
         $this->plugin->ensure_services();
-        $runtime        = class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::runtime_config() : array();
-        $foundation_ready = class_exists('Lunara_Journal_Control_Plane') && class_exists('Lunara_Dispatch_Control_Plane_Client') && Lunara_Dispatch_Control_Plane_Client::available();
+        $foundation_ready = $this->foundation_ready();
+        $runtime        = class_exists('Lunara_Dispatch_Control_Plane_Client')
+            ? ($foundation_ready ? Lunara_Dispatch_Control_Plane_Client::runtime_config() : Lunara_Dispatch_Control_Plane_Client::legacy_runtime_config())
+            : array();
         $provider       = isset($runtime['provider']) ? sanitize_key((string) $runtime['provider']) : sanitize_key(get_option('lunara_dispatch_provider', 'openai'));
         $schedule_value = isset($runtime['schedule']) ? sanitize_key((string) $runtime['schedule']) : get_option('lunara_dispatch_schedule', 'daily');
         $post_status    = 'draft';
         $sources        = Lunara_Dispatch_Sources::all();
-        if (empty($sources)) {
+        if (!$foundation_ready && empty($sources)) {
             $sources = Lunara_Dispatch_Sources::defaults();
         }
         $enabled_sources = array_values(array_filter($sources, function ($src) {
@@ -216,11 +285,11 @@ class Lunara_Dispatch_Admin {
             ? '$' . number_format((float) $last_ai_usage['estimated_cost_usd'], 4)
             : 'not recorded';
         $status_label = method_exists($this->plugin, 'get_status_label') ? $this->plugin->get_status_label($post_status) : $post_status;
-        $system_prompt = class_exists('Lunara_Dispatch_Prompts') ? Lunara_Dispatch_Prompts::system_prompt() : '';
-        $prompt_override = get_option('lunara_dispatch_system_prompt_override', '');
+        $system_prompt = !$foundation_ready && class_exists('Lunara_Dispatch_Prompts') ? Lunara_Dispatch_Prompts::system_prompt() : '';
+        $prompt_override = $foundation_ready ? '' : get_option('lunara_dispatch_system_prompt_override', '');
         $prompt_mode = $foundation_ready
             ? 'Journal Control Plane config ' . sanitize_text_field((string) ($runtime['config_version'] ?? 'active'))
-            : 'Unavailable - Journal Foundation is required';
+            : 'Legacy recovery settings';
 
         $providers = array(
             'claude' => 'Anthropic Claude',
@@ -232,9 +301,15 @@ class Lunara_Dispatch_Admin {
         <div style="background-color: #0a1520; color: #ffffff; padding: 20px; font-family: Georgia, serif; line-height: 1.7;">
             <h1 style="color: #c9a961; font-family: 'Trebuchet MS', sans-serif; text-transform: uppercase;">Lunara Dispatch Automation</h1>
             <p style="color:#cccccc;">Multi-source film-news aggregation, written in the Lunara Journal voice. Each Journal story becomes its own <?php echo esc_html($status_label); ?> post with that exact source story's lead image set as featured when the page exposes one.</p>
-            <div style="margin:16px 0 22px; padding:14px 18px; border:1px solid rgba(201,169,97,.35); background:rgba(201,169,97,.08); color:#ffffff;">
-                <strong>Managed by Journal Control Plane.</strong> Runtime settings, sources, prompts, provider selection, schedule, target post type, and publish behavior are now governed from <a style="color:#c9a961;" href="<?php echo esc_url(admin_url('edit.php?post_type=journal&page=lunara-journal-control-plane')); ?>">Journal → Control Plane</a>. This screen remains useful for API key storage, diagnostics, manual runs, and legacy visibility.
-            </div>
+            <?php if ($foundation_ready) : ?>
+                <div style="margin:16px 0 22px; padding:14px 18px; border:1px solid rgba(201,169,97,.35); background:rgba(201,169,97,.08); color:#ffffff;">
+                    <strong>Managed by Journal Control Plane.</strong> Workflow settings have one authoritative home. Dispatch keeps provider keys, diagnostics, manual runs, and the visual queue here. <a style="color:#c9a961;" href="<?php echo esc_url(admin_url('edit.php?post_type=journal&page=lunara-journal-control-plane')); ?>">Open Journal Control Plane</a>.
+                </div>
+            <?php else : ?>
+                <div style="margin:16px 0 22px; padding:14px 18px; border:1px solid rgba(255,180,168,.45); background:rgba(255,180,168,.08); color:#ffffff;">
+                    <strong>Legacy recovery mode.</strong> Journal Foundation is absent or protocol-incompatible, so Dispatch runs are stopped. These preserved settings remain editable for recovery; provider keys and diagnostics stay here.
+                </div>
+            <?php endif; ?>
             <?php if ( isset($_GET['control-plane-managed']) ) : ?>
                 <div style="margin:0 0 22px; padding:12px 18px; border-left:4px solid #c9a961; background:#111f2d; color:#fff;">Source edits are now made in Journal → Control Plane so Dispatch and ChatGPT read the same source list.</div>
             <?php endif; ?>
@@ -244,7 +319,7 @@ class Lunara_Dispatch_Admin {
                 <p style="margin:0 0 8px; color:#ffffff;"><strong>Status:</strong> <?php echo esc_html($last_state); ?></p>
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Next scheduled run:</strong> <?php echo esc_html($next_run); ?></p>
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Last completed run:</strong> <?php echo esc_html($last_run); ?></p>
-                <p style="margin:0 0 8px; color:#cccccc;"><strong>Active sources:</strong> <?php echo esc_html((string) count($enabled_sources)); ?><?php if (!empty($enabled_sources)) : ?> — <?php echo esc_html(implode(', ', array_map(function ($src) { return (string) ($src['label'] ?? 'Source'); }, $enabled_sources))); ?><?php endif; ?></p>
+                <p style="margin:0 0 8px; color:#cccccc;"><strong>Active sources:</strong> <?php echo esc_html((string) count($enabled_sources)); ?> enabled sources<?php if (!$foundation_ready && !empty($enabled_sources)) : ?> — <?php echo esc_html(implode(', ', array_map(function ($src) { return (string) ($src['label'] ?? 'Source'); }, $enabled_sources))); ?><?php endif; ?>.</p>
                 <p style="margin:0 0 8px; color:<?php echo $foundation_ready ? '#cccccc' : '#ffb4a8'; ?>;"><strong>Journal Foundation dependency:</strong> <?php echo esc_html($foundation_ready ? 'Ready' : 'Required plugin missing or protocol-incompatible; draft creation is stopped'); ?></p>
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Live post behavior:</strong> New Journal entries are forcibly created as <code style="color:#c9a961;">draft</code> through the Control Plane.</p>
                 <p style="margin:0 0 8px; color:#cccccc;"><strong>Last topic-overlap skips:</strong> <?php echo esc_html((string) $last_topic_skips); ?></p>
@@ -267,6 +342,33 @@ class Lunara_Dispatch_Admin {
             <form method="post" action="options.php">
                 <?php settings_fields('lunara_dispatch_options'); ?>
 
+                <?php if ($foundation_ready) : ?>
+                    <?php
+                    $schedule_labels = array(
+                        'daily'         => 'Daily',
+                        'twice_daily'   => 'Twice Daily',
+                        'every_4_hours' => 'Every 4 Hours',
+                        'every_2_hours' => 'Every 2 Hours',
+                    );
+                    $active_model = isset($runtime['models'][$provider]) && is_scalar($runtime['models'][$provider])
+                        ? (string) $runtime['models'][$provider]
+                        : 'Not configured';
+                    $schedule_label = isset($schedule_labels[$schedule_value]) ? $schedule_labels[$schedule_value] : 'Daily';
+                    ?>
+                    <h2 style="color:#c9a961; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; border-bottom:1px solid #c9a961; padding-bottom:6px;">Foundation-owned runtime</h2>
+                    <p style="color:#cccccc;">These live workflow choices are summarized here without duplicate controls. Change them in their authoritative tool.</p>
+                    <table style="width:100%;">
+                        <?php $this->row('Automation', !empty($runtime['enabled']) ? 'Enabled' : 'Paused'); ?>
+                        <?php $this->row('Run Frequency', esc_html($schedule_label)); ?>
+                        <?php $this->row('Active Provider', esc_html($providers[$provider] ?? ucfirst($provider))); ?>
+                        <?php $this->row('Active Model', '<code style="color:#c9a961;">' . esc_html($active_model) . '</code>'); ?>
+                        <?php $this->row('Max Output Tokens', esc_html((string) ((int) ($runtime['max_tokens'] ?? 2200)))); ?>
+                        <?php $this->row('Editorial Voice', 'Managed in Journal Control Plane'); ?>
+                        <?php $this->row('Prompt', 'Managed in Journal Control Plane'); ?>
+                        <?php $this->row('Sources', esc_html((string) count($enabled_sources)) . ' enabled sources'); ?>
+                    </table>
+                    <p><a href="<?php echo esc_url(admin_url('edit.php?post_type=journal&page=lunara-journal-control-plane')); ?>" style="display:inline-block;background-color:#c9a961;color:#0a1520;padding:8px 14px;text-decoration:none;font-family:'Trebuchet MS',sans-serif;text-transform:uppercase;">Open Journal Control Plane</a></p>
+                <?php else : ?>
                 <h2 style="color:#c9a961; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; border-bottom:1px solid #c9a961; padding-bottom:6px;">General</h2>
                 <table style="width:100%;">
                     <?php $this->row('Enable Automation', '<input type="checkbox" name="lunara_dispatch_enabled" value="1" ' . checked(1, get_option('lunara_dispatch_enabled'), false) . ' />'); ?>
@@ -310,18 +412,28 @@ class Lunara_Dispatch_Admin {
                     $this->row('Max Output Tokens', '<input type="number" min="512" max="2200" name="lunara_dispatch_max_tokens" value="' . esc_attr(get_option('lunara_dispatch_max_tokens', 2200)) . '" style="' . $this->input_style(120) . '" /><p style="color:#cccccc;font-size:13px;margin:6px 0 0;">OpenAI is hard-capped at 2,200 output tokens per run. A billing or provider failure creates source-packet drafts instead of stopping the desk.</p>');
                     ?>
                 </table>
+                <?php endif; ?>
 
+                <?php if ($foundation_ready) : ?>
+                    <h2 style="color:#c9a961; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; border-bottom:1px solid #c9a961; padding-bottom:6px; margin-top:30px;">Provider Credentials</h2>
+                    <p style="color:#cccccc;">Credentials remain owned by Dispatch. Secret values are never rendered back into this page.</p>
+                <?php endif; ?>
                 <?php
-                $this->provider_block('Claude (Anthropic)', 'claude', 'claude-opus-4-5', 'sk-ant-api03-...');
-                $this->provider_block('OpenAI (ChatGPT)',    'openai', 'gpt-5.4-mini',    'sk-proj-...');
-                $this->provider_block('Google Gemini',       'gemini', 'gemini-2.5-pro',  'AIza...');
-                $this->provider_block('xAI Grok',            'grok',   'grok-4',          'xai-...');
+                $include_models = !$foundation_ready;
+                $this->provider_block('Claude (Anthropic)', 'claude', 'claude-opus-4-5', 'sk-ant-api03-...', $include_models);
+                $this->provider_block('OpenAI (ChatGPT)',    'openai', 'gpt-5.4-mini',    'sk-proj-...', $include_models);
+                $this->provider_block('Google Gemini',       'gemini', 'gemini-2.5-pro',  'AIza...', $include_models);
+                $this->provider_block('xAI Grok',            'grok',   'grok-4',          'xai-...', $include_models);
                 ?>
 
-                <?php submit_button('Save Settings', 'primary', 'submit', false, array('style' => 'background-color: #c9a961; color: #0a1520; font-family:\'Trebuchet MS\',sans-serif; text-transform:uppercase; border:none; padding:10px 20px; margin-top:20px;')); ?>
+                <?php submit_button($foundation_ready ? 'Save Provider Keys' : 'Save Settings', 'primary', 'submit', false, array('style' => 'background-color: #c9a961; color: #0a1520; font-family:\'Trebuchet MS\',sans-serif; text-transform:uppercase; border:none; padding:10px 20px; margin-top:20px;')); ?>
             </form>
 
             <h2 style="color:#c9a961; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; border-bottom:1px solid #c9a961; padding-bottom:6px; margin-top:40px;">RSS Sources</h2>
+            <?php if ($foundation_ready) : ?>
+                <p style="color:#cccccc;"><?php echo esc_html((string) count($enabled_sources)); ?> enabled sources are managed in Journal Control Plane. Labels, URLs, priorities, and per-run limits are edited only there.</p>
+                <p><a href="<?php echo esc_url(admin_url('edit.php?post_type=journal&page=lunara-journal-control-plane')); ?>" style="color:#c9a961;">Open Journal Control Plane</a></p>
+            <?php else : ?>
             <p style="color:#cccccc;">Each enabled feed contributes up to its own max-items per run. Items deduped across all sources by URL fingerprint.</p>
             <form method="post">
                 <?php wp_nonce_field('lunara_dispatch_sources_save', 'lunara_dispatch_sources_nonce'); ?>
@@ -344,6 +456,7 @@ class Lunara_Dispatch_Admin {
                 </p>
                 <?php submit_button('Save Sources', 'primary', 'lds_save_sources', false, array('style' => 'background-color: #c9a961; color: #0a1520; font-family:\'Trebuchet MS\',sans-serif; text-transform:uppercase; border:none; padding:10px 20px;')); ?>
             </form>
+            <?php endif; ?>
 
             <h2 style="color:#c9a961; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; border-bottom:1px solid #c9a961; padding-bottom:6px; margin-top:40px;">Manual Run</h2>
             <p style="color:#cccccc;">Queues a bounded background run immediately. Dispatch creates Journal drafts only; publishing remains a manual editorial decision.</p>
@@ -355,7 +468,7 @@ class Lunara_Dispatch_Admin {
 
         </div>
 
-        <?php $this->print_template_row(); ?>
+        <?php if (!$foundation_ready) { $this->print_template_row(); } ?>
         <?php $this->print_admin_js(); ?>
         <?php
     }
@@ -371,8 +484,8 @@ class Lunara_Dispatch_Admin {
         return $w . ' background-color:#1a2938; color:#fff; border:1px solid #c9a961; padding:6px;';
     }
 
-    private function provider_block($title, $key, $default_model, $placeholder) {
-        $stored_model = (string) get_option('lunara_dispatch_' . $key . '_model', $default_model);
+    private function provider_block($title, $key, $default_model, $placeholder, $include_model = true) {
+        $stored_model = $include_model ? (string) get_option('lunara_dispatch_' . $key . '_model', $default_model) : '';
         $configured   = class_exists('Lunara_Dispatch_AI_Client') && Lunara_Dispatch_AI_Client::secret_is_configured($key);
         ?>
         <h3 style="color:#c9a961; font-family:'Trebuchet MS',sans-serif; text-transform:uppercase; margin-top:24px;"><?php echo esc_html($title); ?></h3>
@@ -384,10 +497,12 @@ class Lunara_Dispatch_Admin {
             $key_field .= '<p style="color:#cccccc; font-size:13px; margin:6px 0 0;">Server constant/environment credentials take precedence. Secret values are never rendered back into this page.</p>';
 
             $this->row('API Key', $key_field);
-            $this->row('Model',
-                '<input type="text" name="lunara_dispatch_' . esc_attr($key) . '_model" value="' . esc_attr($stored_model) . '" style="' . $this->input_style() . '" />'
-                . '<p style="color:#cccccc; font-size:13px; margin:6px 0 0;">Default: <code style="color:#c9a961;">' . esc_html($default_model) . '</code></p>'
-            );
+            if ($include_model) {
+                $this->row('Model',
+                    '<input type="text" name="lunara_dispatch_' . esc_attr($key) . '_model" value="' . esc_attr($stored_model) . '" style="' . $this->input_style() . '" />'
+                    . '<p style="color:#cccccc; font-size:13px; margin:6px 0 0;">Default: <code style="color:#c9a961;">' . esc_html($default_model) . '</code></p>'
+                );
+            }
             ?>
         </table>
         <?php
