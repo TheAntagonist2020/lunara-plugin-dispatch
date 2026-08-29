@@ -39,11 +39,14 @@ $prompts = dispatch_contract_file($root, 'includes/class-prompts.php');
 $control = dispatch_contract_file($root, 'includes/class-control-plane-client.php');
 $bridge = dispatch_contract_file($root, 'includes/class-journal-ingest-bridge.php');
 $reader = dispatch_contract_file($root, 'includes/class-source-reader.php');
+$sources = dispatch_contract_file($root, 'includes/class-sources.php');
+$site_studio = dispatch_contract_file($root, 'includes/class-site-studio.php');
 $readme = dispatch_contract_file($root, 'README.md');
+$deployignore = dispatch_contract_file($root, '.deployignore');
 
-dispatch_contract_contains($bootstrap, "Version:     3.2.6", 'plugin header is not 3.2.6', $failures);
-dispatch_contract_contains($bootstrap, "LUNARA_DISPATCH_VERSION', '3.2.6'", 'runtime version constant is not 3.2.6', $failures);
-dispatch_contract_contains($readme, 'Current baseline: `3.2.6`.', 'README baseline is not 3.2.6', $failures);
+dispatch_contract_contains($bootstrap, "Version:     3.2.7", 'plugin header is not 3.2.7', $failures);
+dispatch_contract_contains($bootstrap, "LUNARA_DISPATCH_VERSION', '3.2.7'", 'runtime version constant is not 3.2.7', $failures);
+dispatch_contract_contains($readme, 'Current baseline: `3.2.7`.', 'README baseline is not 3.2.7', $failures);
 dispatch_contract_contains($plugin, "lunara_journal_control_plane_activated", 'Control Plane activation is not consumed', $failures);
 dispatch_contract_contains($plugin, 'add_option(self::LOCK_KEY', 'worker lock is not atomically inserted', $failures);
 dispatch_contract_contains($plugin, 'AND option_value = %s', 'worker lock lacks compare-and-swap ownership', $failures);
@@ -72,9 +75,9 @@ dispatch_contract_contains($feed, "'published_at'", 'RSS publication date is not
 dispatch_contract_contains($feed, "'source_author'", 'RSS author is not carried into the source item payload', $failures);
 dispatch_contract_contains($feed, 'get_date(DATE_ATOM)', 'RSS publication date is not normalized through SimplePie', $failures);
 dispatch_contract_contains($feed, 'get_author()', 'RSS author is not read from SimplePie', $failures);
-dispatch_contract_contains($feed, 'LunaraDispatch/3.2.6', 'feed user agent is not release-aligned', $failures);
-dispatch_contract_contains($images, 'LunaraDispatch/3.2.6', 'image user agent is not release-aligned', $failures);
-dispatch_contract_contains($reader, 'LunaraDispatch/3.2.6', 'source-reader user agent is not release-aligned', $failures);
+dispatch_contract_contains($feed, 'LunaraDispatch/3.2.7', 'feed user agent is not release-aligned', $failures);
+dispatch_contract_contains($images, 'LunaraDispatch/3.2.7', 'image user agent is not release-aligned', $failures);
+dispatch_contract_contains($reader, 'LunaraDispatch/3.2.7', 'source-reader user agent is not release-aligned', $failures);
 dispatch_contract_contains($plugin, "class-source-reader.php", 'bounded source reader is not loaded by Dispatch', $failures);
 dispatch_contract_contains($plugin, "dispatch_source_items", 'IFTTT Source Radar signals are not merged into Dispatch', $failures);
 dispatch_contract_contains($plugin, "record_dispatch_source_outcome", 'terminal Source Radar outcomes are not returned to Foundation', $failures);
@@ -123,6 +126,21 @@ dispatch_contract_contains($bridge, 'lunara_dispatch_foundation_required', 'abse
 dispatch_contract_excludes($bridge, 'wp_insert_post(', 'Journal bridge retains a standalone insert fallback', $failures);
 dispatch_contract_contains($bootstrap, "class-journal-ingest-bridge.php", 'Journal ingest bridge is not loaded', $failures);
 dispatch_contract_contains($admin, 'Journal Foundation dependency:', 'admin health does not surface the required Foundation dependency', $failures);
+dispatch_contract_contains($bootstrap, "includes/class-site-studio.php", 'redacted Site Studio compatibility module is not always loaded', $failures);
+dispatch_contract_contains($site_studio, "add_filter( 'lunara_site_studio_surfaces'", 'Dispatch does not contribute its inert guided handoff', $failures);
+dispatch_contract_contains($site_studio, "'capability'          => 'manage_options'", 'Dispatch handoff does not retain manage_options', $failures);
+dispatch_contract_contains($site_studio, "options-general.php?page=lunara-dispatch-settings", 'Dispatch handoff lost its canonical settings URL', $failures);
+dispatch_contract_contains($sources, 'foundation_manages_sources()', 'legacy source writes are not guarded at their storage boundary', $failures);
+$deployignore_lines = array_values(array_filter(array_map('trim', preg_split('/\R/', $deployignore))));
+if (!in_array('tests', $deployignore_lines, true) || !in_array('tests/**', $deployignore_lines, true)) {
+    $failures[] = 'tests are not excluded from deployment';
+}
+if (!in_array('README.md', $deployignore_lines, true)) {
+    $failures[] = 'README is not excluded from deployment';
+}
+if (in_array('includes', $deployignore_lines, true) || in_array('includes/**', $deployignore_lines, true)) {
+    $failures[] = 'production includes directory is incorrectly excluded from deployment';
+}
 
 if (!defined('ABSPATH')) {
     define('ABSPATH', $root . DIRECTORY_SEPARATOR);

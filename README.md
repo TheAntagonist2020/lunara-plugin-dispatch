@@ -14,7 +14,14 @@ Dispatch aggregates film-news sources, routes eligible items through the Lunara 
 
 ## Version
 
-Current baseline: `3.2.6`.
+Current baseline: `3.2.7`.
+
+### 3.2.7 Journal Foundation ownership and Site Studio status
+
+- Replaces duplicate Foundation-owned runtime, voice, prompt, model, token, and source controls with plain-language read-only summaries and an authoritative Journal Control Plane handoff whenever the compatible protocol is available.
+- Preserves every legacy recovery value against forged Settings API and source-storage writes while keeping provider credentials, diagnostics, manual runs, Reset Seen, history, and the visual-assignment queue in Dispatch.
+- Adds an inert Site Studio operations destination and a deliberately redacted status API that exposes only aggregate health, timestamp, enabled-source count, and the canonical Dispatch action.
+- Keeps the complete legacy recovery form available when Journal Foundation is absent or protocol-incompatible.
 
 ### 3.2.6 RSS source provenance
 
