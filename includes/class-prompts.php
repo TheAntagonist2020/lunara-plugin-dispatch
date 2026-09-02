@@ -136,7 +136,9 @@ FORMATTING - CRITICAL:
 - Start every entry with its own original <h3> headline.
 - That <h3> headline will become the WordPress post title for the split Journal entry.
 - Make the <h3> concise, sharp, and editorial. It should frame the read, not just repeat the lede.
-- After the <h3>, write the body in <p> tags.
+- Immediately after the <h3>, on its own line, write the deck as an HTML comment: <!-- LUNARA_DECK: ... -->. Plain text inside the comment, no tags.
+- The deck is one or two sentences, 18 to 40 words. It is a tease, not a summary: name the tension, the stakes, or the thing the reader will not see coming, and leave it unresolved so the body has to be read. It must not repeat the <h3> and must not repeat or paraphrase the first sentence of the body.
+- After the deck comment, write the body in <p> tags.
 - Output valid HTML only, no Markdown.
 - Film titles in <em>.
 - Never use <strong> on people's names.
@@ -151,6 +153,7 @@ HEADLINE RULES:
 
 STRUCTURE:
 - First: the <h3> headline.
+- Then the <!-- LUNARA_DECK: ... --> tease, which the site shows under the headline as the deck.
 - Then the hook: what happened, already framed with your angle.
 - Then the context: why it matters, including history, trajectory, production logic, audience behavior, or industry consequence.
 - Then the read: what it reveals about the filmmaker, performer, studio, festival, awards body, audience, or market.
@@ -198,6 +201,7 @@ Rules:
 - Do not use <h2>.
 - Start every entry with an original <h3> headline in Lunara's voice.
 - That <h3> is the WordPress post title for the split entry, so make it feel like a real editorial headline.
+- Directly after the <h3>, write the deck as <!-- LUNARA_DECK: ... -->: one or two sentences, 18 to 40 words, a provocative tease into the entry that repeats neither the headline nor the first sentence of the body.
 - Then begin the body in <p> tags.
 - Do not use <strong> on people's names.
 - Film titles in <em>.

@@ -28,6 +28,7 @@ jobs:
       - name: Journal integration runtime
         run: |
           php tests/dispatch-integration-runtime.php
+          php tests/dispatch-deck-tease-runtime.php
           php tests/dispatch-worker-runtime.php
           php tests/dispatch-foundation-dependency-runtime.php
           php tests/dispatch-foundation-ownership-runtime.php

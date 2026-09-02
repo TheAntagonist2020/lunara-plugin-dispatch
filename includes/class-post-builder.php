@@ -142,11 +142,44 @@ class Lunara_Dispatch_Post_Builder {
 	 */
 	public function extract_sections_with_body( $html ) {
 		$sections = $this->extract_h2_sections_with_body( $html );
-		if ( ! empty( $sections ) ) {
-			return $sections;
+		if ( empty( $sections ) ) {
+			$sections = $this->extract_hr_sections_with_body( $html );
 		}
 
-		return $this->extract_hr_sections_with_body( $html );
+		foreach ( $sections as $index => $section ) {
+			$split = $this->extract_section_deck( $section['body'] );
+			$sections[ $index ]['deck'] = $split['deck'];
+			$sections[ $index ]['body'] = $split['body'];
+		}
+
+		return $sections;
+	}
+
+	/**
+	 * Lift the model-written deck out of a section body.
+	 *
+	 * The prompt asks for the deck as an HTML comment directly after the
+	 * headline: <!-- LUNARA_DECK: ... -->. A comment keeps the body free of
+	 * classes and wrappers and stays invisible if an older parser ever leaves
+	 * it in place. The comment is removed from the body so the quality gate,
+	 * topic signature, excerpt, and reader never see it. A missing comment
+	 * yields an empty deck and the bridge falls back to the body excerpt.
+	 *
+	 * @param string $html Section body HTML.
+	 * @return array{deck:string, body:string}
+	 */
+	public function extract_section_deck( $html ) {
+		$html = (string) $html;
+		$deck = '';
+		if ( preg_match( '/<!--\s*LUNARA_DECK:\s*(.*?)\s*-->/is', $html, $matches ) ) {
+			$deck = html_entity_decode( wp_strip_all_tags( $matches[1] ), ENT_QUOTES, get_bloginfo( 'charset' ) );
+			$deck = trim( preg_replace( '/\s+/u', ' ', (string) $deck ) );
+		}
+		$body = preg_replace( '/\s*<!--\s*LUNARA_DECK:.*?-->\s*/is', "\n", $html );
+		return array(
+			'deck' => $deck,
+			'body' => trim( (string) $body ),
+		);
 	}
 
 	/**
@@ -276,7 +309,7 @@ class Lunara_Dispatch_Post_Builder {
 
 			$slug     = sanitize_title( $title );
 			$featured = isset( $section_image_map[ $slug ] ) ? (int) $section_image_map[ $slug ] : 0;
-			$payload = Lunara_Dispatch_Journal_Ingest_Bridge::build_payload( $title, $body, $run_context, (int) $section_index );
+			$payload = Lunara_Dispatch_Journal_Ingest_Bridge::build_payload( $title, $body, $run_context, (int) $section_index, isset( $section['deck'] ) ? (string) $section['deck'] : '' );
 			$payload['featured_media'] = $featured;
 			if ( $source_packet_mode ) {
 				$payload['acf']['journal_dispatch_conversion_notes'] = 'OpenAI was unavailable. Dispatch preserved a deterministic source packet, provenance, and image candidate for ChatGPT or human review; this is not publishable copy.';

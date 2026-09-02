@@ -7,11 +7,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class Lunara_Dispatch_Journal_Ingest_Bridge {
-    public static function build_payload( $title, $body, array $run_context = array(), $section_index = 0 ) {
+    public static function build_payload( $title, $body, array $run_context = array(), $section_index = 0, $deck = '' ) {
         $title = trim( wp_strip_all_tags( (string) $title ) );
         $body = wp_kses_post( (string) $body );
         $excerpt = self::plain_excerpt( $body, 260 );
         $seo = self::plain_excerpt( $body, 155 );
+        $deck = self::resolve_deck( $deck, $title, $body, $excerpt );
         $items = ! empty( $run_context['items'] ) && is_array( $run_context['items'] ) ? $run_context['items'] : array();
         $selected = self::select_source_items( $title, $body, $items, (int) $section_index );
         $canonical_sources = array();
@@ -60,7 +61,7 @@ final class Lunara_Dispatch_Journal_Ingest_Bridge {
             'title'           => $title,
             'content'         => $body,
             'excerpt'         => $excerpt,
-            'deck'            => $excerpt,
+            'deck'            => $deck,
             'seo_description' => $seo,
             'featured_media'  => absint( $run_context['featured_media'] ?? 0 ),
             'idempotency_key' => $idempotency_key,
@@ -77,7 +78,7 @@ final class Lunara_Dispatch_Journal_Ingest_Bridge {
                 'studios_platforms' => self::sanitize_list( $run_context['studios_platforms'] ?? array() ),
             ),
             'acf' => array(
-                'journal_deck'                      => $excerpt,
+                'journal_deck'                      => $deck,
                 'journal_seo_description'           => $seo,
                 'journal_source_items'              => $canonical_sources,
                 'journal_original_dispatch_copy'    => $body,
@@ -151,6 +152,52 @@ final class Lunara_Dispatch_Journal_Ingest_Bridge {
         return array_values( array_unique( array_filter( is_array( $parts ) ? $parts : array(), static function ( $word ) use ( $stop ) {
             return strlen( $word ) >= 3 && ! in_array( $word, $stop, true );
         } ) ) );
+    }
+
+    /**
+     * Choose the deck the hero will show.
+     *
+     * The model is asked to write the deck as a tease that does not repeat
+     * the headline or the opening of the body. When it does that, the deck
+     * is used as written. When the comment is missing, empty, oversized, or
+     * simply re-states the headline or the first sentence, the deck falls
+     * back to the body excerpt, which is the behavior every Dispatch draft
+     * had before 3.2.8, so a model that ignores the instruction changes
+     * nothing.
+     *
+     * @param string $deck    Model-written deck, plain text.
+     * @param string $title   Section headline.
+     * @param string $body    Section body HTML.
+     * @param string $excerpt Plain excerpt of the body.
+     * @return string
+     */
+    public static function resolve_deck( $deck, $title, $body, $excerpt ) {
+        $deck = html_entity_decode( wp_strip_all_tags( (string) $deck ), ENT_QUOTES, get_bloginfo( 'charset' ) );
+        $deck = trim( preg_replace( '/\s+/u', ' ', (string) $deck ) );
+        if ( '' === $deck ) {
+            return $excerpt;
+        }
+        $length = function_exists( 'mb_strlen' ) ? mb_strlen( $deck ) : strlen( $deck );
+        if ( $length < 20 || $length > 400 ) {
+            return $excerpt;
+        }
+        $normalized_deck = self::normalize_for_compare( $deck );
+        if ( $normalized_deck === self::normalize_for_compare( $title ) ) {
+            return $excerpt;
+        }
+        $opening = self::normalize_for_compare( self::plain_excerpt( $body, 400 ) );
+        $deck_words = array_slice( explode( ' ', $normalized_deck ), 0, 6 );
+        $opening_words = array_slice( explode( ' ', $opening ), 0, count( $deck_words ) );
+        if ( ! empty( $deck_words ) && $deck_words === $opening_words ) {
+            return $excerpt;
+        }
+        return $deck;
+    }
+
+    private static function normalize_for_compare( $text ) {
+        $text = strtolower( (string) $text );
+        $text = preg_replace( '/[^a-z0-9]+/u', ' ', $text );
+        return trim( (string) $text );
     }
 
     private static function plain_excerpt( $html, $max_chars ) {

@@ -14,7 +14,14 @@ Dispatch aggregates film-news sources, routes eligible items through the Lunara 
 
 ## Version
 
-Current baseline: `3.2.7`.
+Current baseline: `3.2.8`.
+
+### 3.2.8 Model-written deck tease
+
+- Asks the model for a deck as an HTML comment directly after each `<h3>`: `<!-- LUNARA_DECK: ... -->`, one or two sentences, 18 to 40 words, a tease into the entry that repeats neither the headline nor the opening sentence. The live instruction is compiled by Journal Foundation 1.2.14; the in-plugin fallback prompt carries the same rule for runs without the Control Plane.
+- Lifts the comment out of every section body before the quality gate, topic signature, excerpt, and SEO description see it, and hands it to Journal Foundation as `deck` and `journal_deck`.
+- Falls back to the previous behavior, the first 260 characters of the body, whenever the comment is missing, empty, under 20 or over 400 characters, or merely restates the headline or the first sentence. A model that ignores the instruction produces exactly the drafts 3.2.7 produced.
+- Deploy Dispatch 3.2.8 before Journal Foundation 1.2.14. In the reverse order the model emits the comment and the older parser leaves it, invisibly, in post content until Dispatch catches up.
 
 ### 3.2.7 Journal Foundation ownership and Site Studio status
 
