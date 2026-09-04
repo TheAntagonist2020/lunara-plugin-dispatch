@@ -99,8 +99,12 @@ if ( strlen( (string) ( $body['input'] ?? '' ) ) > 18010 ) {
 	fwrite( STDERR, "OpenAI input character ceiling was not enforced.\n" );
 	exit( 1 );
 }
-if ( 'none' !== ( $body['reasoning']['effort'] ?? '' ) || 'low' !== ( $body['text']['verbosity'] ?? '' ) ) {
-	fwrite( STDERR, "OpenAI reasoning/verbosity cost controls are missing.\n" );
+// Reasoning stays off: reasoning tokens count against the 2200 output cap and
+// would truncate a two-entry run. Verbosity is medium, not low: low is an
+// explicit instruction to be terse, and terse is the wire-service register the
+// Journal voice exists to reject. Output cost is bounded by the same cap either way.
+if ( 'none' !== ( $body['reasoning']['effort'] ?? '' ) || 'medium' !== ( $body['text']['verbosity'] ?? '' ) ) {
+	fwrite( STDERR, "OpenAI reasoning/verbosity controls are not the 3.2.8 settings.\n" );
 	exit( 1 );
 }
 

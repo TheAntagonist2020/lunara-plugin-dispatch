@@ -6,7 +6,7 @@
 
 $root = dirname( __DIR__ );
 define( 'ABSPATH', $root . DIRECTORY_SEPARATOR );
-define( 'LUNARA_DISPATCH_VERSION', '3.2.7' );
+define( 'LUNARA_DISPATCH_VERSION', '3.2.8' );
 
 $dispatch_filters       = array();
 $dispatch_status_reads  = array( 'options' => 0, 'schedules' => 0, 'reports' => 0, 'history' => 0, 'sources' => 0 );

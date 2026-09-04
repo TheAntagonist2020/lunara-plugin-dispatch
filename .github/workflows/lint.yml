@@ -25,6 +25,11 @@ jobs:
       - name: Stabilization contract
         run: php tests/dispatch-stabilization-contract.php
 
+      - name: Journal voice runtime
+        run: |
+          php tests/journal-voice-runtime.php
+          php tests/openai-cost-guard-runtime.php
+
       - name: Journal integration runtime
         run: |
           php tests/dispatch-integration-runtime.php
