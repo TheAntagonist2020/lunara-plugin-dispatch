@@ -26,7 +26,8 @@ jv_assert( false === stripos( $system, 'Do not force a question' ), 'Fallback sy
 jv_assert( false === stripos( $system, 'A question is allowed only when' ), 'Fallback system prompt still treats the close question as optional.' );
 
 $directive = Lunara_Dispatch_Prompts::legacy_user_directive_prompt();
-jv_assert( false !== strpos( $directive, 'engagement question' ), 'Fallback user directive must require the per-entry engagement question.' );
+jv_assert( false !== strpos( $directive, 'engagement question' ) && false !== strpos( $directive, 'only when' ), 'Fallback user directive must make the engagement question conditional on a real fork.' );
+jv_assert( false !== strpos( $system, 'only when the entry has a genuine fork' ) && false === strpos( $system, 'each entry carries its own question' ), 'Fallback close must make the engagement question conditional, not mandatory.' );
 jv_assert( false !== strpos( $directive, 'First person is allowed' ), 'Fallback user directive must permit first person.' );
 jv_assert( false === stripos( $directive, 'A question is optional' ), 'Fallback user directive still treats the close question as optional.' );
 jv_assert( substr( rtrim( $directive ), -16 ) === 'Input News Data:', 'Fallback user directive must still end at the news-data boundary.' );
