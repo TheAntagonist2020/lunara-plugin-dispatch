@@ -206,7 +206,55 @@ class Lunara_Dispatch_Post_Builder {
 	 * @param string $post_status Post status.
 	 * @return array
 	 */
+	/**
+	 * Fold typographic punctuation the model emits by habit into the ASCII
+	 * forms the Journal publishes: straight quotes, two hyphens for a dash,
+	 * three periods for an ellipsis. Accented characters in names and titles
+	 * are left alone; Foundation's ASCII warning still flags those for a human.
+	 *
+	 * @param string $html Generated HTML.
+	 * @return string
+	 */
+	public static function normalize_typographic_punctuation( $html ) {
+		$map = array(
+			"\xE2\x80\x98" => "'",   // left single quote
+			"\xE2\x80\x99" => "'",   // right single quote / apostrophe
+			"\xE2\x80\x9A" => "'",   // single low quote
+			"\xE2\x80\xB2" => "'",   // prime
+			"\xE2\x80\x9C" => '"',   // left double quote
+			"\xE2\x80\x9D" => '"',   // right double quote
+			"\xE2\x80\x9E" => '"',   // double low quote
+			"\xE2\x80\xB3" => '"',   // double prime
+			"\xE2\x80\x94" => '--',  // em dash
+			"\xE2\x80\x95" => '--',  // horizontal bar
+			"\xE2\x80\x93" => '-',   // en dash
+			"\xE2\x80\xA6" => '...', // ellipsis
+			"\xC2\xA0"     => ' ',   // no-break space
+			"\xE2\x80\x89" => ' ',   // thin space
+			"\xE2\x80\x8B" => '',    // zero-width space
+			'&rsquo;'  => "'",
+			'&lsquo;'  => "'",
+			'&#8217;'  => "'",
+			'&#8216;'  => "'",
+			'&rdquo;'  => '"',
+			'&ldquo;'  => '"',
+			'&#8221;'  => '"',
+			'&#8220;'  => '"',
+			'&mdash;'  => '--',
+			'&#8212;'  => '--',
+			'&ndash;'  => '-',
+			'&#8211;'  => '-',
+			'&hellip;' => '...',
+			'&#8230;'  => '...',
+			'&nbsp;'   => ' ',
+			'&#160;'   => ' ',
+		);
+
+		return strtr( (string) $html, $map );
+	}
+
 	public function split_into_individual_posts( $html, array $section_image_map, $post_type, $post_status = 'draft', array $run_context = array() ) {
+		$html                              = self::normalize_typographic_punctuation( $html );
 		$created                           = array();
 		$post_status                       = 'draft';
 		$post_type                         = 'journal';

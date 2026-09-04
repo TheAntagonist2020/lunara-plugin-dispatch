@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     define( 'ABSPATH', $root . DIRECTORY_SEPARATOR );
 }
 if ( ! defined( 'LUNARA_DISPATCH_VERSION' ) ) {
-    define( 'LUNARA_DISPATCH_VERSION', '3.2.7' );
+    define( 'LUNARA_DISPATCH_VERSION', '3.2.8' );
 }
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
     define( 'HOUR_IN_SECONDS', 3600 );

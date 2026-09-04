@@ -164,7 +164,7 @@ class Lunara_Dispatch_AI_Client {
 					'effort' => 'none',
 				),
 				'text'              => array(
-					'verbosity' => 'low',
+					'verbosity' => 'medium',
 				),
 			)),
 		));

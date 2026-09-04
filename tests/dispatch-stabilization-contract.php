@@ -44,9 +44,9 @@ $site_studio = dispatch_contract_file($root, 'includes/class-site-studio.php');
 $readme = dispatch_contract_file($root, 'README.md');
 $deployignore = dispatch_contract_file($root, '.deployignore');
 
-dispatch_contract_contains($bootstrap, "Version:     3.2.7", 'plugin header is not 3.2.7', $failures);
-dispatch_contract_contains($bootstrap, "LUNARA_DISPATCH_VERSION', '3.2.7'", 'runtime version constant is not 3.2.7', $failures);
-dispatch_contract_contains($readme, 'Current baseline: `3.2.7`.', 'README baseline is not 3.2.7', $failures);
+dispatch_contract_contains($bootstrap, "Version:     3.2.8", 'plugin header is not 3.2.8', $failures);
+dispatch_contract_contains($bootstrap, "LUNARA_DISPATCH_VERSION', '3.2.8'", 'runtime version constant is not 3.2.8', $failures);
+dispatch_contract_contains($readme, 'Current baseline: `3.2.8`.', 'README baseline is not 3.2.8', $failures);
 dispatch_contract_contains($plugin, "lunara_journal_control_plane_activated", 'Control Plane activation is not consumed', $failures);
 dispatch_contract_contains($plugin, 'add_option(self::LOCK_KEY', 'worker lock is not atomically inserted', $failures);
 dispatch_contract_contains($plugin, 'AND option_value = %s', 'worker lock lacks compare-and-swap ownership', $failures);
@@ -75,9 +75,9 @@ dispatch_contract_contains($feed, "'published_at'", 'RSS publication date is not
 dispatch_contract_contains($feed, "'source_author'", 'RSS author is not carried into the source item payload', $failures);
 dispatch_contract_contains($feed, 'get_date(DATE_ATOM)', 'RSS publication date is not normalized through SimplePie', $failures);
 dispatch_contract_contains($feed, 'get_author()', 'RSS author is not read from SimplePie', $failures);
-dispatch_contract_contains($feed, 'LunaraDispatch/3.2.7', 'feed user agent is not release-aligned', $failures);
-dispatch_contract_contains($images, 'LunaraDispatch/3.2.7', 'image user agent is not release-aligned', $failures);
-dispatch_contract_contains($reader, 'LunaraDispatch/3.2.7', 'source-reader user agent is not release-aligned', $failures);
+dispatch_contract_contains($feed, 'LunaraDispatch/3.2.8', 'feed user agent is not release-aligned', $failures);
+dispatch_contract_contains($images, 'LunaraDispatch/3.2.8', 'image user agent is not release-aligned', $failures);
+dispatch_contract_contains($reader, 'LunaraDispatch/3.2.8', 'source-reader user agent is not release-aligned', $failures);
 dispatch_contract_contains($plugin, "class-source-reader.php", 'bounded source reader is not loaded by Dispatch', $failures);
 dispatch_contract_contains($plugin, "dispatch_source_items", 'IFTTT Source Radar signals are not merged into Dispatch', $failures);
 dispatch_contract_contains($plugin, "record_dispatch_source_outcome", 'terminal Source Radar outcomes are not returned to Foundation', $failures);
