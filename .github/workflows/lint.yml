@@ -34,6 +34,7 @@ jobs:
         run: |
           php tests/dispatch-integration-runtime.php
           php tests/dispatch-worker-runtime.php
+          php tests/dispatch-pitches-runtime.php
           php tests/dispatch-foundation-dependency-runtime.php
           php tests/dispatch-foundation-ownership-runtime.php
           php tests/dispatch-source-ownership-runtime.php

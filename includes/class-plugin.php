@@ -33,6 +33,7 @@ class Lunara_Dispatch_Plugin {
     /** @var Lunara_Dispatch_Admin         */ public $admin;
 
     /** @var string */ private $current_run_id = '';
+    /** @var array */ private $current_pitch_items = array();
 
     public static function instance() {
         if (null === self::$instance) {
@@ -540,6 +541,19 @@ class Lunara_Dispatch_Plugin {
      * @return array
      */
     public function run($force = false) {
+        $this->current_pitch_items = array();
+        $result = $this->run_once($force);
+
+        // Approved pitches beyond this run's cap go straight into the next
+        // worker run, now that the lock is released.
+        if (!empty($this->current_pitch_items) && !empty($result['success'])
+            && class_exists('Lunara_Dispatch_Pitches') && Lunara_Dispatch_Pitches::has_approved()) {
+            $this->queue_manual_run();
+        }
+        return $result;
+    }
+
+    private function run_once($force) {
         $this->ensure_services();
         $this->current_run_id = wp_generate_uuid4();
         if (!$this->foundation_is_available()) {
@@ -559,8 +573,23 @@ class Lunara_Dispatch_Plugin {
         }
 
         try {
-            $fetched      = $this->feed_fetcher->fetch_all();
-            $radar_merge  = $this->merge_source_radar_items( $fetched['items'] );
+            // Pitch gate: stories Dalton approved in the hub are written first
+            // (no feed pull). Otherwise, with pitch mode on, the run only files
+            // what it found as pitches and writes nothing.
+            $pitch_items = class_exists('Lunara_Dispatch_Pitches') && Lunara_Dispatch_Pitches::has_approved()
+                ? Lunara_Dispatch_Pitches::approved_items(self::MAX_ITEMS_PER_RUN)
+                : array();
+            if (!empty($pitch_items)) {
+                $this->current_pitch_items = $pitch_items;
+                $fetched     = array('items' => array(), 'skipped_duplicates' => 0, 'errors' => array());
+                $radar_merge = array('items' => $pitch_items, 'accepted_signal_ids' => array(), 'duplicate_signal_ids' => array());
+            } else {
+                $fetched     = $this->feed_fetcher->fetch_all();
+                $radar_merge = $this->merge_source_radar_items( $fetched['items'] );
+                if (class_exists('Lunara_Dispatch_Pitches') && Lunara_Dispatch_Pitches::enabled()) {
+                    return $this->file_pitches($fetched, $radar_merge);
+                }
+            }
             $items        = $radar_merge['items'];
             $deferred_source_items = max(0, count($items) - self::MAX_ITEMS_PER_RUN);
             if ($deferred_source_items > 0) {
@@ -641,7 +670,10 @@ class Lunara_Dispatch_Plugin {
                     . $image_policy
                     . "\nDESCRIPTION:\n" . $this->prompt_source_text( $i['description'] )
                     . $full_context
-                    . "\n[END_UNTRUSTED_SOURCE_ITEM]\n";
+                    . "\n[END_UNTRUSTED_SOURCE_ITEM]\n"
+                    . ( ! empty( $i['editor_angle'] )
+                        ? "EDITOR_ANGLE (from the Lunara editor, for the item above; build the piece around it, never invent facts to serve it): " . $this->prompt_source_text( $i['editor_angle'] ) . "\n"
+                        : '' );
             }
             $news_data = implode("\n", $lines);
 
@@ -710,6 +742,7 @@ class Lunara_Dispatch_Plugin {
 
             if ($this->generation_requested_skip($generated)) {
                 $this->record_source_radar_outcome( $items, 'editorial_skip' );
+                $this->settle_pitches($items, 'skipped', array(), 'No reader-worthy entry passed the editorial gate.');
                 $this->feed_fetcher->mark_seen($items);
 
                 return $this->result(true, sprintf(
@@ -774,6 +807,7 @@ class Lunara_Dispatch_Plugin {
                 }
                 if ($topic_duplicate_count > 0) {
                     $this->record_source_radar_outcome( $items, 'topic_duplicate' );
+                $this->settle_pitches($items, 'skipped', array(), 'Overlapped a recent Journal topic.');
                     $this->feed_fetcher->mark_seen($items);
 
 					return $this->result(true, sprintf(
@@ -803,6 +837,7 @@ class Lunara_Dispatch_Plugin {
 
                 if ($quality_gate_count > 0) {
                     $this->record_source_radar_outcome( $items, 'quality_gate' );
+                $this->settle_pitches($items, 'skipped', array(), 'Failed the editorial quality gate.');
                     $this->feed_fetcher->mark_seen($items);
 
 					return $this->result(true, sprintf(
@@ -877,6 +912,7 @@ class Lunara_Dispatch_Plugin {
 
             if (empty($insertion_failures)) {
                 $this->record_source_radar_outcome( $items, 'drafted', $created_post_ids );
+                $this->settle_pitches($items, 'written', $created_post_ids);
                 $this->feed_fetcher->mark_seen($items);
             }
 
@@ -924,6 +960,44 @@ class Lunara_Dispatch_Plugin {
             )));
         } finally {
             $this->release_lock($lock_owner);
+        }
+    }
+
+    /**
+     * Pitch mode: file this run's finds for Dalton instead of writing them.
+     * Feed items are marked seen once filed; Source Radar signals stay open
+     * until he decides (the pitch store closes them out).
+     */
+    private function file_pitches(array $fetched, array $radar_merge) {
+        $filed = Lunara_Dispatch_Pitches::add_items($radar_merge['items']);
+        $feed_items = array_values(array_filter(
+            array_slice($radar_merge['items'], 0, Lunara_Dispatch_Pitches::MAX_PER_RUN),
+            static function ($item) { return empty($item['automation_signal_id']); }
+        ));
+        $this->feed_fetcher->mark_seen($feed_items);
+        if (!empty($radar_merge['duplicate_signal_ids'])) {
+            $this->record_source_radar_signal_ids($radar_merge['duplicate_signal_ids'], 'duplicate');
+        }
+        $waiting = Lunara_Dispatch_Pitches::count_status('pending');
+
+        return $this->result(true, sprintf(
+            'Pitch mode: filed %d new pitch(es); %d waiting for the editor in the LUNARA Hub. No drafts written.',
+            $filed,
+            $waiting
+        ), array(
+            'created'            => 0,
+            'imported'           => 0,
+            'pitches_filed'      => $filed,
+            'pitches_waiting'    => $waiting,
+            'skipped_duplicates' => $fetched['skipped_duplicates'] + count($radar_merge['duplicate_signal_ids']),
+            'feed_errors'        => $fetched['errors'],
+            'post_ids'           => array(),
+        ));
+    }
+
+    private function settle_pitches(array $items, $status, array $post_ids = array(), $note = '') {
+        if (class_exists('Lunara_Dispatch_Pitches')) {
+            Lunara_Dispatch_Pitches::settle($items, $status, $post_ids, $note);
         }
     }
 
