@@ -14,7 +14,14 @@ Dispatch aggregates film-news sources, routes eligible items through the Lunara 
 
 ## Version
 
-Current baseline: `3.2.8`.
+Current baseline: `3.3.0`.
+
+### 3.3.0 Pitch gate
+
+- New pitch mode (`lunara_dispatch_pitch_mode`, off by default). With it on, a Dispatch run collects stories as usual but files up to 12 of them as pitches (headline, source, summary, link) instead of writing drafts. The editor decides in the LUNARA Hub: **Write it** (with an optional angle) or **Pass**. Only approved pitches are ever written, through the unchanged hydrate → generate → Foundation ingest path, still draft-only.
+- Approved pitches jump the queue: the next worker run skips the feed pull, writes up to three, and queues another run while more remain. A decision with approvals queues that run immediately. The editor's angle travels to the model as a trusted `EDITOR_ANGLE` line outside the untrusted source block.
+- Every pitch is closed out honestly: `written` (with post ids), `skipped` (with the editorial gate's reason) or `passed`. Passing a Source Radar pitch closes its Automation Inbox signal as `editorial_skip`.
+- REST, for the hub (Application Password, `edit_others_posts`): `GET lunara/v1/dispatch/pitches`, `POST lunara/v1/dispatch/pitches/decide` `{write:[ids], pass:[ids], angles:{id:note}}`, `GET|POST lunara/v1/dispatch/pitches/mode` `{enabled}`. Contract: `tests/dispatch-pitches-runtime.php`.
 
 ### 3.2.8 Journal voice alignment
 
