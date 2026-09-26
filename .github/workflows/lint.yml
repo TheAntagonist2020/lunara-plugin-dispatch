@@ -29,6 +29,7 @@ jobs:
         run: |
           php tests/journal-voice-runtime.php
           php tests/openai-cost-guard-runtime.php
+          php tests/dispatch-claude-voice-runtime.php
 
       - name: Journal integration runtime
         run: |

@@ -14,6 +14,29 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Lunara_Dispatch_Post_Builder {
 
 	/**
+	 * Phrases that reject a section outright. Kept to genuine press-release /
+	 * churnalism tells. Dropped 'poised to' and 'underscores' -- common enough
+	 * in sharp, legitimate criticism that they were catching good stories on
+	 * an incidental word, not bad ones. Dispatch sends a draft back once for
+	 * revision when it carries one of these, before this gate sees it.
+	 */
+	const HARD_TELLS = array(
+		'this matters because',
+		'worth keeping an eye on',
+		'raises significant questions',
+		'highly anticipated',
+		'made waves',
+		'only time will tell',
+		'fans are eagerly awaiting',
+		'delves into',
+		'a testament to',
+		'the announcement comes as',
+		'the news comes as',
+		'the project is described as',
+		'in an exclusive report',
+	);
+
+	/**
 	 * Sections skipped during the latest split because they matched recent
 	 * Journal topics.
 	 *
@@ -537,27 +560,8 @@ class Lunara_Dispatch_Post_Builder {
 			return 'weak headline shape';
 		}
 
-		// Kept to genuine press-release / churnalism tells. Dropped 'poised to'
-		// and 'underscores' -- common enough in sharp, legitimate criticism that
-		// they were catching good stories on an incidental word, not bad ones.
-		$banned_phrases = array(
-			'this matters because',
-			'worth keeping an eye on',
-			'raises significant questions',
-			'highly anticipated',
-			'made waves',
-			'only time will tell',
-			'fans are eagerly awaiting',
-			'delves into',
-			'a testament to',
-			'the announcement comes as',
-			'the news comes as',
-			'the project is described as',
-			'in an exclusive report',
-		);
-
 		$lower_text = strtolower( $text );
-		foreach ( $banned_phrases as $phrase ) {
+		foreach ( self::HARD_TELLS as $phrase ) {
 			if ( false !== strpos( $lower_text, $phrase ) ) {
 				return 'banned phrase: ' . $phrase;
 			}

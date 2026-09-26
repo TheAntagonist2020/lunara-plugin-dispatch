@@ -14,7 +14,15 @@ Dispatch aggregates film-news sources, routes eligible items through the Lunara 
 
 ## Version
 
-Current baseline: `3.3.0`.
+Current baseline: `3.4.0`.
+
+### 3.4.0 Claude writes the Journal
+
+- Drafts did not sound like Dalton: a small model wrote up to three entries into one 2,200-token response, so each came out near 200 words, and a banned phrase got an entry thrown away rather than fixed. Journal Foundation 1.4.0 moves the voice (one story per run, his Hook / Context / Specifics / Take / Close / Engagement Question shape at 300 to 700 words, a closing question every time, and his Eggers and Street Fighter entries as the voice target) and, once an Anthropic key is saved here, switches the writer to Claude Opus 5.
+- Claude requests use the Opus 5 shape: adaptive thinking at `high` effort, `fallbacks: "default"` with the `server-side-fallback-2026-07-01` beta header (a policy decline re-runs on Anthropic's recommended model), the system prompt as a cached block, no sampling parameters, and a 300-second timeout. `stop_reason` is checked before any text is read: a `refusal` or a draft cut off at `max_tokens` never becomes a draft. Only `text` blocks are kept. Usage and an Opus 5 cost estimate go into the run report. An older Claude model ID keeps the plain request.
+- Claude may use up to 16,000 output tokens because its thinking counts against the same limit; OpenAI, Gemini, and Grok keep the 2,200 cap.
+- Approved pitches are written one per run, each with its own full generation, and marked `EDITOR_APPROVED` outside the untrusted block so the model writes Dalton's pick instead of skipping it.
+- A draft that uses a Control Plane banned or cut-on-sight phrase, or one of the post builder's outright rejections (`Lunara_Dispatch_Post_Builder::HARD_TELLS`), goes back to the model once with the phrases named. Claude sees its own draft as the previous turn. The revision replaces the draft; a failed or skipping revision keeps the original. The run report records `voice_revision`. Contract: `tests/dispatch-claude-voice-runtime.php`.
 
 ### 3.3.0 Pitch gate
 

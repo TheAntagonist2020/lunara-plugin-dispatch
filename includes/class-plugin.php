@@ -21,6 +21,10 @@ class Lunara_Dispatch_Plugin {
     const LOCK_TTL = 20 * MINUTE_IN_SECONDS;
     const SKIP_MARKER = 'LUNARA_SKIP';
     const MAX_ITEMS_PER_RUN = 3;
+    // Each approved pitch is one story and gets its own full generation; the
+    // rest queue straight into the next worker run.
+    const PITCHES_PER_RUN = 1;
+    const MAX_HOUSE_TELLS = 20;
 
     /** @var Lunara_Dispatch_Plugin */
     private static $instance = null;
@@ -577,7 +581,7 @@ class Lunara_Dispatch_Plugin {
             // (no feed pull). Otherwise, with pitch mode on, the run only files
             // what it found as pitches and writes nothing.
             $pitch_items = class_exists('Lunara_Dispatch_Pitches') && Lunara_Dispatch_Pitches::has_approved()
-                ? Lunara_Dispatch_Pitches::approved_items(self::MAX_ITEMS_PER_RUN)
+                ? Lunara_Dispatch_Pitches::approved_items(self::PITCHES_PER_RUN)
                 : array();
             if (!empty($pitch_items)) {
                 $this->current_pitch_items = $pitch_items;
@@ -671,6 +675,9 @@ class Lunara_Dispatch_Plugin {
                     . "\nDESCRIPTION:\n" . $this->prompt_source_text( $i['description'] )
                     . $full_context
                     . "\n[END_UNTRUSTED_SOURCE_ITEM]\n"
+                    . ( ! empty( $i['pitch_id'] )
+                        ? "EDITOR_APPROVED (from the Lunara editor): Dalton picked the item above to be written. Write it; skip it only if the source is too thin to write without inventing facts.\n"
+                        : '' )
                     . ( ! empty( $i['editor_angle'] )
                         ? "EDITOR_ANGLE (from the Lunara editor, for the item above; build the piece around it, never invent facts to serve it): " . $this->prompt_source_text( $i['editor_angle'] ) . "\n"
                         : '' );
@@ -738,6 +745,42 @@ class Lunara_Dispatch_Plugin {
                     'ai_error_code'    => '',
                     'ai_usage'         => $ai_usage,
                 ));
+            }
+
+            // One revision pass when the draft uses a phrase the Control Plane
+            // bans or the post builder rejects outright: the model rewrites
+            // those sentences instead of the gate throwing the entry away.
+            if (!$ai_fallback_used && !$this->generation_requested_skip($generated)) {
+                $tells = $this->find_house_tells($generated);
+                if (!empty($tells)) {
+                    $revised = $this->ai_client->generate($news_data, array(
+                        'draft' => $generated,
+                        'note'  => $this->revision_note($tells),
+                    ));
+                    $revision_usage = method_exists($this->ai_client, 'get_last_usage') ? $this->ai_client->get_last_usage() : array();
+                    $context_data['ai_usage'] = $this->combine_usage($ai_usage, $revision_usage);
+                    if (!$this->heartbeat_lock($lock_owner)) {
+                        return $this->result(false, 'Dispatch lost worker-lock ownership after the voice revision and stopped before creating drafts.', array_merge($context_data, array(
+                            'retry_required' => true,
+                            'feed_errors' => $errors,
+                            'skipped_duplicates' => $skipped,
+                        )));
+                    }
+                    $voice_revision = array(
+                        'tells_found'     => $tells,
+                        'revised'         => false,
+                        'tells_remaining' => $tells,
+                        'error_code'      => '',
+                    );
+                    if (is_wp_error($revised)) {
+                        $voice_revision['error_code'] = sanitize_key((string) $revised->get_error_code());
+                    } elseif ('' !== trim((string) $revised) && !$this->generation_requested_skip($revised)) {
+                        $generated = $revised;
+                        $voice_revision['revised'] = true;
+                        $voice_revision['tells_remaining'] = $this->find_house_tells($revised);
+                    }
+                    $context_data['voice_revision'] = $voice_revision;
+                }
             }
 
             if ($this->generation_requested_skip($generated)) {
@@ -1001,6 +1044,59 @@ class Lunara_Dispatch_Plugin {
         }
     }
 
+    /**
+     * House tells in a generated draft: the post builder's outright rejections
+     * plus the Control Plane's banned and cut-on-sight phrases. Matched on
+     * whole words in the visible text, headline included.
+     *
+     * @return string[]
+     */
+    private function find_house_tells($html) {
+        $phrases = class_exists('Lunara_Dispatch_Post_Builder') ? Lunara_Dispatch_Post_Builder::HARD_TELLS : array();
+        if (class_exists('Lunara_Dispatch_Control_Plane_Client') && method_exists('Lunara_Dispatch_Control_Plane_Client', 'house_tells')) {
+            $phrases = array_merge($phrases, Lunara_Dispatch_Control_Plane_Client::house_tells());
+        }
+        // Tags become spaces first, so a headline and the paragraph after it never fuse into one word.
+        $text = html_entity_decode(wp_strip_all_tags(preg_replace('/<[^>]*>/', ' ', (string) $html)), ENT_QUOTES, 'UTF-8');
+        $text = strtolower(str_replace(array("\xE2\x80\x98", "\xE2\x80\x99", "\xE2\x80\x9C", "\xE2\x80\x9D"), array("'", "'", '"', '"'), $text));
+        $text = preg_replace('/\s+/u', ' ', $text);
+        $found = array();
+        foreach (array_unique(array_map('strtolower', array_map('trim', $phrases))) as $phrase) {
+            if ('' === $phrase || in_array($phrase, $found, true)) {
+                continue;
+            }
+            if (preg_match('/(?<![a-z0-9])' . preg_quote($phrase, '/') . '(?![a-z0-9])/u', $text)) {
+                $found[] = $phrase;
+                if (count($found) >= self::MAX_HOUSE_TELLS) {
+                    break;
+                }
+            }
+        }
+        return $found;
+    }
+
+    private function revision_note(array $tells) {
+        return 'Revise your draft. It uses phrases LUNARA never prints: "' . implode('", "', $tells) . '". '
+            . 'Rewrite the sentences that carry them the way Dalton would say it out loud: make the point directly instead of announcing it. '
+            . 'Keep the facts, the angle, the length, and the closing question, and add nothing the source does not support. '
+            . 'Return the complete revised entry in the same HTML format, and nothing else.';
+    }
+
+    /** Token and cost totals across the draft and its revision pass. */
+    private function combine_usage(array $first, array $second) {
+        if (empty($second)) {
+            return $first;
+        }
+        $combined = $first;
+        foreach (array('input_tokens', 'cached_input_tokens', 'output_tokens') as $field) {
+            $combined[$field] = (int) ($first[$field] ?? 0) + (int) ($second[$field] ?? 0);
+        }
+        $combined['estimated_cost_usd'] = is_numeric($first['estimated_cost_usd'] ?? null) && is_numeric($second['estimated_cost_usd'] ?? null)
+            ? round((float) $first['estimated_cost_usd'] + (float) $second['estimated_cost_usd'], 6)
+            : null;
+        return $combined;
+    }
+
     private function generation_requested_skip($generated) {
         return false !== stripos((string) $generated, self::SKIP_MARKER);
     }
@@ -1197,6 +1293,12 @@ class Lunara_Dispatch_Plugin {
 			'deferred_source_items' => isset($payload['deferred_source_items']) ? (int) $payload['deferred_source_items'] : 0,
 			'ai_fallback_used' => !empty($payload['ai_fallback_used']),
 			'ai_error_code' => isset($payload['ai_error_code']) ? sanitize_key((string) $payload['ai_error_code']) : '',
+			'voice_revision' => isset($payload['voice_revision']) && is_array($payload['voice_revision']) ? array_intersect_key($payload['voice_revision'], array_flip(array(
+				'tells_found',
+				'revised',
+				'tells_remaining',
+				'error_code',
+			))) : array(),
 			'ai_usage' => isset($payload['ai_usage']) && is_array($payload['ai_usage']) ? array_intersect_key($payload['ai_usage'], array_flip(array(
 				'provider',
 				'requested_model',

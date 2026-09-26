@@ -26,6 +26,12 @@ class Lunara_Dispatch_AI_Client {
 	const MAX_RESPONSE_BYTES = 2097152;
 	const OPENAI_DEFAULT_MODEL = 'gpt-5.4-mini';
 	const OPENAI_MAX_OUTPUT_TOKENS = 2200;
+	const CLAUDE_DEFAULT_MODEL = 'claude-opus-5';
+	// Opus 5 thinks before it writes; the effort sets how hard. Drafts run on
+	// WP-Cron with nobody waiting, so the voice gets the deeper pass.
+	const CLAUDE_EFFORT = 'high';
+	const CLAUDE_TIMEOUT = 300;
+	const CLAUDE_FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
 	/** @var array<string,mixed> */
 	private $last_usage = array();
@@ -35,15 +41,23 @@ class Lunara_Dispatch_AI_Client {
      * using whichever provider is currently selected.
      *
      * @param  string $news_data
+     * @param  array  $revision  Optional second pass: 'draft' (the model's own
+     *                           HTML) and 'note' (what to fix). Claude sees it
+     *                           as a follow-up turn; other providers get the
+     *                           draft and note appended to the same request.
      * @return string|WP_Error  HTML on success, WP_Error on failure.
      */
-    public function generate($news_data) {
+    public function generate($news_data, array $revision = array()) {
         $news_data = $this->limit_text((string) $news_data, self::MAX_INPUT_CHARS);
         $provider = class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::provider() : sanitize_key(get_option('lunara_dispatch_provider', 'openai'));
         $system   = Lunara_Dispatch_Prompts::system_prompt();
         $user_prompt = Lunara_Dispatch_Prompts::user_directive_prompt();
         $user     = Lunara_Dispatch_Prompts::user_directive($news_data);
         $tokens   = $this->resolve_max_tokens();
+        $revision = $this->normalize_revision($revision);
+        if (!empty($revision) && 'claude' !== $provider) {
+            $user .= "\n\nYOUR DRAFT:\n" . $revision['draft'] . "\n\n" . $revision['note'];
+        }
 
         switch ($provider) {
             case 'openai':
@@ -54,8 +68,29 @@ class Lunara_Dispatch_AI_Client {
                 return $this->call_grok($system, $user, $tokens);
             case 'claude':
             default:
-                return $this->call_claude($system, $user_prompt, $news_data, $tokens);
+                return $this->call_claude($system, $user_prompt, $news_data, $tokens, $revision);
         }
+    }
+
+    private function normalize_revision(array $revision) {
+        $draft = isset($revision['draft']) && is_scalar($revision['draft']) ? trim((string) $revision['draft']) : '';
+        $note  = isset($revision['note']) && is_scalar($revision['note']) ? trim((string) $revision['note']) : '';
+        if ('' === $draft || '' === $note) {
+            return array();
+        }
+        return array(
+            'draft' => $this->limit_text($draft, self::MAX_INPUT_CHARS),
+            'note'  => $this->limit_text($note, 2000),
+        );
+    }
+
+    /**
+     * Claude 5-family models take adaptive thinking, effort, and server-side
+     * fallbacks. An older Claude ID keeps the plain request it has always
+     * accepted (adaptive thinking would be a 400 there).
+     */
+    public static function is_claude_5($model) {
+        return 1 === preg_match('/^claude-(?:opus|sonnet|fable|mythos)-5(?:[-.]|$)/', (string) $model);
     }
 
     private function resolve_max_tokens() {
@@ -67,54 +102,122 @@ class Lunara_Dispatch_AI_Client {
 
     /* ──────────────────────────── CLAUDE ──────────────────────────── */
 
-    private function call_claude($system, $user_prompt, $news_data, $max_tokens) {
+    private function call_claude($system, $user_prompt, $news_data, $max_tokens, array $revision = array()) {
         $key = $this->resolve_secret('claude');
         if (empty($key)) {
             return new WP_Error('missing_api_key', 'Anthropic API key is not set.');
         }
-        $model = class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::model_for_provider('claude', 'claude-opus-4-5') : sanitize_text_field(get_option('lunara_dispatch_claude_model', 'claude-opus-4-5'));
+        $model = class_exists('Lunara_Dispatch_Control_Plane_Client') ? Lunara_Dispatch_Control_Plane_Client::model_for_provider('claude', self::CLAUDE_DEFAULT_MODEL) : sanitize_text_field(get_option('lunara_dispatch_claude_model', self::CLAUDE_DEFAULT_MODEL));
+        $modern = self::is_claude_5($model);
+        $this->last_usage = array(
+            'provider'          => 'claude',
+            'requested_model'   => $model,
+            'effective_model'   => $model,
+            'max_output_tokens' => (int) $max_tokens,
+        );
+
+        $messages = array(array(
+            'role'    => 'user',
+            'content' => array(
+                array(
+                    'type'          => 'text',
+                    'text'          => $user_prompt,
+                    'cache_control' => array('type' => 'ephemeral'),
+                ),
+                array(
+                    'type' => 'text',
+                    'text' => "\n" . $news_data,
+                ),
+            ),
+        ));
+        if (!empty($revision)) {
+            // The model sees its own draft as its previous turn, then the note.
+            $messages[] = array('role' => 'assistant', 'content' => $revision['draft']);
+            $messages[] = array('role' => 'user', 'content' => $revision['note']);
+        }
+
+        $body = array(
+            'model'      => $model,
+            'max_tokens' => (int) $max_tokens,
+            // The system prompt carries Dalton's full exemplars; caching it
+            // makes a same-run revision pass cheap.
+            'system'     => array(array(
+                'type'          => 'text',
+                'text'          => $system,
+                'cache_control' => array('type' => 'ephemeral'),
+            )),
+            'messages'   => $messages,
+        );
+        $headers = array(
+            'Content-Type'      => 'application/json',
+            'x-api-key'         => $key,
+            'anthropic-version' => '2023-06-01',
+        );
+        if ($modern) {
+            $body['thinking']      = array('type' => 'adaptive');
+            $body['output_config'] = array('effort' => self::CLAUDE_EFFORT);
+            // A policy decline is re-run server-side on Anthropic's recommended model.
+            $body['fallbacks']     = 'default';
+            $headers['anthropic-beta'] = self::CLAUDE_FALLBACK_BETA;
+        }
 
         $response = wp_safe_remote_post('https://api.anthropic.com/v1/messages', array(
-            'timeout' => 120,
+            'timeout' => $modern ? self::CLAUDE_TIMEOUT : 120,
             'redirection' => 0,
             'reject_unsafe_urls' => true,
             'limit_response_size' => self::MAX_RESPONSE_BYTES,
-            'headers' => array(
-                'Content-Type'      => 'application/json',
-                'x-api-key'         => $key,
-                'anthropic-version' => '2023-06-01',
-            ),
-            'body' => wp_json_encode(array(
-                'model'      => $model,
-                'max_tokens' => $max_tokens,
-                'system'     => $system,
-                'messages'   => array(array(
-                    'role'    => 'user',
-                    'content' => array(
-                        array(
-                            'type'          => 'text',
-                            'text'          => $user_prompt,
-                            'cache_control' => array('type' => 'ephemeral'),
-                        ),
-                        array(
-                            'type' => 'text',
-                            'text' => "\n" . $news_data,
-                        ),
-                    ),
-                )),
-            )),
+            'headers' => $headers,
+            'body' => wp_json_encode($body),
         ));
 
         if (is_wp_error($response)) { return $response; }
 
         $status = (int) wp_remote_retrieve_response_code($response);
         $parsed = json_decode(wp_remote_retrieve_body($response), true);
-
-        if ($status !== 200) {
-            $msg = $parsed['error']['message'] ?? ('HTTP ' . $status);
-            return new WP_Error('claude_api_error', 'Claude error: ' . $msg);
+        if (!is_array($parsed)) {
+            return new WP_Error('ai_invalid_response', 'Claude returned an unreadable response.');
         }
 
+        if ($status !== 200) {
+            $type = sanitize_key((string) ($parsed['error']['type'] ?? ''));
+            $msg  = sanitize_text_field((string) ($parsed['error']['message'] ?? ('HTTP ' . $status)));
+            $code = 'claude_api_error';
+            if (401 === $status || 403 === $status || 'authentication_error' === $type || 'permission_error' === $type) {
+                $code = 'ai_auth_error';
+            } elseif (false !== stripos($msg, 'credit balance') || 'billing_error' === $type) {
+                $code = 'ai_billing_error';
+            } elseif (429 === $status || 'rate_limit_error' === $type) {
+                $code = 'ai_rate_limit';
+            }
+            return new WP_Error($code, 'Claude error: ' . $msg, array('status' => $status, 'type' => $type));
+        }
+
+        $usage = !empty($parsed['usage']) && is_array($parsed['usage']) ? $parsed['usage'] : array();
+        $uncached    = max(0, (int) ($usage['input_tokens'] ?? 0));
+        $cache_write = max(0, (int) ($usage['cache_creation_input_tokens'] ?? 0));
+        $cache_read  = max(0, (int) ($usage['cache_read_input_tokens'] ?? 0));
+        $output      = max(0, (int) ($usage['output_tokens'] ?? 0));
+        $effective   = sanitize_text_field((string) ($parsed['model'] ?? $model));
+        $this->last_usage = array_merge($this->last_usage, array(
+            'effective_model'     => '' !== $effective ? $effective : $model,
+            'input_tokens'        => $uncached + $cache_write + $cache_read,
+            'cached_input_tokens' => $cache_read,
+            'output_tokens'       => $output,
+            'estimated_cost_usd'  => $this->estimate_claude_cost($effective, $uncached, $cache_write, $cache_read, $output),
+        ));
+
+        // Check why the turn ended before reading any text: a refusal can
+        // arrive with partial or no content, and a draft cut off at the token
+        // ceiling is not a draft.
+        $stop = (string) ($parsed['stop_reason'] ?? '');
+        if ('refusal' === $stop) {
+            return new WP_Error('ai_refusal', 'Claude declined to write from these items.');
+        }
+        if ('max_tokens' === $stop) {
+            return new WP_Error('ai_truncated', 'Claude reached the output limit before finishing the entry.');
+        }
+
+        // Only text blocks are the entry; thinking and fallback blocks are not.
         $html = '';
         if (!empty($parsed['content']) && is_array($parsed['content'])) {
             foreach ($parsed['content'] as $block) {
@@ -123,7 +226,19 @@ class Lunara_Dispatch_AI_Client {
                 }
             }
         }
-        return trim($html) !== '' ? $html : new WP_Error('claude_empty', 'Claude returned no text.');
+        return trim($html) !== '' ? trim($html) : new WP_Error('claude_empty', 'Claude returned no text.');
+    }
+
+    /** USD per million tokens: input, cache write, cache read, output. */
+    private function estimate_claude_cost($model, $uncached, $cache_write, $cache_read, $output) {
+        $rates = array(
+            'claude-opus-5' => array(5.00, 6.25, 0.50, 25.00),
+        );
+        if (!isset($rates[$model])) {
+            return null;
+        }
+        $r = $rates[$model];
+        return round((($uncached * $r[0]) + ($cache_write * $r[1]) + ($cache_read * $r[2]) + ($output * $r[3])) / 1000000, 6);
     }
 
     /* ──────────────────────────── OPENAI ──────────────────────────── */

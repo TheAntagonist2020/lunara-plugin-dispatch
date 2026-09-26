@@ -70,7 +70,7 @@ final class Lunara_Dispatch_Control_Plane_Client {
             'provider'         => $provider,
             'models'           => array(
                 'openai' => sanitize_text_field( (string) get_option( 'lunara_dispatch_openai_model', 'gpt-5.4-mini' ) ),
-                'claude' => sanitize_text_field( (string) get_option( 'lunara_dispatch_claude_model', 'claude-opus-4-5' ) ),
+                'claude' => sanitize_text_field( (string) get_option( 'lunara_dispatch_claude_model', 'claude-opus-5' ) ),
                 'gemini' => sanitize_text_field( (string) get_option( 'lunara_dispatch_gemini_model', 'gemini-2.5-pro' ) ),
                 'grok'   => sanitize_text_field( (string) get_option( 'lunara_dispatch_grok_model', 'grok-4' ) ),
             ),
@@ -96,9 +96,32 @@ final class Lunara_Dispatch_Control_Plane_Client {
         return sanitize_text_field( (string) $default );
     }
 
+    /**
+     * Claude may use up to 16,000 output tokens because its thinking counts
+     * against the same limit; every other provider keeps the 2,200 cost cap.
+     */
     public static function max_tokens() {
         $runtime = self::runtime_config();
-        return max( 512, min( 2200, (int) ( $runtime['max_tokens'] ?? 2200 ) ) );
+        $cap = 'claude' === self::provider() ? 16000 : 2200;
+        return max( 512, min( $cap, (int) ( $runtime['max_tokens'] ?? 2200 ) ) );
+    }
+
+    /**
+     * Phrases the Control Plane bans (Foundation 1.4.0+). A draft that uses
+     * one is sent back once for revision before the post builder sees it.
+     *
+     * @return string[] Lowercase phrases; empty on older Foundation builds.
+     */
+    public static function house_tells() {
+        $runtime = self::runtime_config();
+        $tells = array();
+        foreach ( isset( $runtime['house_tells'] ) && is_array( $runtime['house_tells'] ) ? $runtime['house_tells'] : array() as $phrase ) {
+            $phrase = is_scalar( $phrase ) ? strtolower( trim( sanitize_text_field( (string) $phrase ) ) ) : '';
+            if ( '' !== $phrase && strlen( $phrase ) <= 160 ) {
+                $tells[] = $phrase;
+            }
+        }
+        return array_values( array_unique( array_slice( $tells, 0, 200 ) ) );
     }
 
     public static function schedule() {

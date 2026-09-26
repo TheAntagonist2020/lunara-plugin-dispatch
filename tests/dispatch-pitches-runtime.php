@@ -289,11 +289,14 @@ pitch_check( false === strpos( $prompt, 'Story 2' ), 'passed pitch reached the m
 $angle_at = strpos( $prompt, 'EDITOR_ANGLE' );
 pitch_check( false !== $angle_at && $angle_at > strpos( $prompt, '[END_UNTRUSTED_SOURCE_ITEM]' ), 'editor angle missing or inside the untrusted block' );
 pitch_check( false !== strpos( $prompt, 'Lead with the director, not the IP.' ), 'editor angle text lost' );
+$approved_at = strpos( $prompt, 'EDITOR_APPROVED' );
+pitch_check( false !== $approved_at && $approved_at > strpos( $prompt, '[END_UNTRUSTED_SOURCE_ITEM]' ), 'approved pitch is not marked as Dalton\'s pick outside the untrusted block' );
 $p1 = pitch_by_title( 'Story 1' );
 pitch_check( 'written' === $p1['status'] && array( 101 ) === $p1['post_ids'], 'written pitch not closed out with its post id' );
 pitch_check( 'passed' === pitch_by_title( 'Story 2' )['status'], 'passed pitch changed state' );
 
-// 4. More approvals than one run's cap: write three, queue the rest.
+// 4. More approvals than one run's cap: each run writes one story with its own
+//    full generation (3.4.0), and the rest queue into the next run.
 $plugin->feed_fetcher->items = array( pitch_story( 4 ), pitch_story( 5 ), pitch_story( 6 ), pitch_story( 7 ) );
 $plugin->run( true );
 $ids = array();
@@ -303,16 +306,19 @@ foreach ( array( 'Story 3', 'Story 4', 'Story 5', 'Story 6', 'Story 7' ) as $t )
 Lunara_Dispatch_Pitches::decide( $ids, array() );
 $pitch_scheduled = array();
 $batch = $plugin->run( true );
-pitch_check( 3 === $batch['created'], 'capped run did not write three' );
-pitch_check( 2 === Lunara_Dispatch_Pitches::count_status( 'approved' ), 'remaining approvals were lost' );
+pitch_check( 1 === $batch['created'], 'capped run did not write exactly one' );
+pitch_check( 1 === substr_count( end( $plugin->ai_client->prompts ), '[BEGIN_UNTRUSTED_SOURCE_ITEM]' ), 'a pitch run sent more than one story to the model' );
+pitch_check( 4 === Lunara_Dispatch_Pitches::count_status( 'approved' ), 'remaining approvals were lost' );
 pitch_check( array( 'lunara_dispatch_manual_requested' ) === $pitch_scheduled, 'remaining approvals did not queue the next run' );
 
-// 5. Editorial gate rejection closes the pitch as skipped, with the reason.
+// 5. Editorial gate rejection closes each pitch as skipped, with the reason.
 $plugin->post_builder->quality_gate = true;
-$plugin->run( true );
+for ( $n = 0; $n < 4; $n++ ) {
+    $plugin->run( true );
+}
 pitch_check( 0 === Lunara_Dispatch_Pitches::count_status( 'approved' ), 'gate-rejected pitches stayed approved' );
 $skipped = array_values( array_filter( Lunara_Dispatch_Pitches::all(), function ( $p ) { return 'skipped' === $p['status']; } ) );
-pitch_check( 2 === count( $skipped ) && '' !== $skipped[0]['note'], 'gate skips not recorded with a reason' );
+pitch_check( 4 === count( $skipped ) && '' !== $skipped[0]['note'], 'gate skips not recorded with a reason' );
 $plugin->post_builder->quality_gate = false;
 
 // 6. Decided pitches cannot be re-opened or passed after the fact.

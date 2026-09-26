@@ -420,7 +420,7 @@ class Lunara_Dispatch_Admin {
                 <?php endif; ?>
                 <?php
                 $include_models = !$foundation_ready;
-                $this->provider_block('Claude (Anthropic)', 'claude', 'claude-opus-4-5', 'sk-ant-api03-...', $include_models);
+                $this->provider_block('Claude (Anthropic)', 'claude', 'claude-opus-5', 'sk-ant-api03-...', $include_models);
                 $this->provider_block('OpenAI (ChatGPT)',    'openai', 'gpt-5.4-mini',    'sk-proj-...', $include_models);
                 $this->provider_block('Google Gemini',       'gemini', 'gemini-2.5-pro',  'AIza...', $include_models);
                 $this->provider_block('xAI Grok',            'grok',   'grok-4',          'xai-...', $include_models);
